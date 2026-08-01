@@ -1,4 +1,13 @@
 # FootHoled
+```
+______          _   _   _       _          _ 
+|  ___|        | | | | | |     | |        | |
+| |_ ___   ___ | |_| |_| | ___ | | ___  __| |
+|  _/ _ \ / _ \| __|  _  |/ _ \| |/ _ \/ _` |
+| || (_) | (_) | |_| | | | (_) | |  __/ (_| |
+\_| \___/ \___/ \__\_| |_/\___/|_|\___|\__,_|
+```
+
 Open hardware ESP32 cyber platform featuring GPS, rechargeable battery power, external RF support, SAO expansion, and extensible firmware.
 
 An open-source portable cybersecurity platform built around the ESP32.
