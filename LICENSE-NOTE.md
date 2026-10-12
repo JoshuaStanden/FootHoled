@@ -1,0 +1,1 @@
+The existing upstream FootHoled repository reportedly uses MIT. This archive intentionally does not replace the upstream LICENSE. When merging into dev, keep the existing LICENSE file from the repository and review third-party driver licenses before copying vendor code.

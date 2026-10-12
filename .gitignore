@@ -1,0 +1,9 @@
+.pio/
+firmware/.pio/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+__pycache__/
+.DS_Store
+.vscode/
+*.log
