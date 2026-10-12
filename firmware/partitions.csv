@@ -1,0 +1,30 @@
+# FootHoled H1 partition table — Waveshare ESP32-S3-Touch-LCD-3.5B (16 MB flash)
+#
+# Total flash: 16 MB (0x1000000)
+# Layout:
+#   0x0000  –  0x8FFF   Second-stage bootloader (ESP-IDF managed, not listed here)
+#   0x9000  –  0xEFFF   NVS  (24 KB) — settings, privacy config, display brightness
+#   0xF000  –  0xFFFF   PHY init data (4 KB)
+#   0x10000 –  0x6FFFF  Factory app (6 MB)  — main FootHoled firmware
+#   0x70000 –  0xCFFFF  OTA_0   (6 MB)      — OTA update slot (future signed-update support)
+#   0xD0000 –  0xFFFFF  Reserved / unused   (192 KB)
+#   0x100000 – 0xFDFFFF SPIFFS  (13 MB)     — observation logs, SD cache, future plugin storage
+#   0xFE0000 – 0xFFFFFF NVS keys (128 KB)   — NVS key partition for encrypted NVS (future)
+#
+# To use this file:  platformio.ini already sets board_build.partitions = partitions.csv
+# ESP-IDF:           idf.py menuconfig → Partition Table → Custom partition CSV file
+#
+# Size notes
+#   6 MB app slots give headroom for LVGL + drivers + future radio stacks.
+#   SPIFFS region provides ~13 MB for observation storage before an SD card is added.
+#   Adjust OTA slot to 0 KB and redistribute to SPIFFS if OTA is never needed.
+#
+# TODO(HW): verify offset alignment on physical board after first flash.
+
+# Name,     Type,  SubType,  Offset,    Size,    Flags
+nvs,         data,  nvs,      0x9000,    0x6000,
+phy_init,    data,  phy,      0xF000,    0x1000,
+factory,     app,   factory,  0x10000,   6M,
+ota_0,       app,   ota_0,    0x610000,  6M,
+spiffs,      data,  spiffs,   0xC10000,  0x3D0000,
+nvs_keys,    data,  nvs_keys, 0xFE0000,  0x20000,

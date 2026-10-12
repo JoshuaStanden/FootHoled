@@ -1,3 +1,20 @@
+# FootHoled H1 sdkconfig.defaults
+# Target: Waveshare ESP32-S3-Touch-LCD-3.5B (ESP32-S3R8, 16 MB flash, 8 MB PSRAM)
+# TODO(HW): verify SPIRAM mode (octal vs quad) on the physical board revision.
+
+# PSRAM
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y
+CONFIG_SPIRAM_RODATA=y
+
+# Larger main task stack for LVGL initialisation
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Enable the new I2C master driver (used by board_adapter.cpp for touch)
+CONFIG_I2C_ENABLE_DEBUG_LOG=n
+
+# SPI: allow large DMA transfers for the 320x480 frame buffer
+CONFIG_SPI_MASTER_IN_IRAM=y

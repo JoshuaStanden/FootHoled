@@ -1,2 +1,5 @@
 dependencies:
   lvgl/lvgl: "~9.2.2"
+  # AXS15231B QSPI display driver required by board_adapter.cpp.
+  # Sourced from the ESP Component Registry (espressif/esp_lcd_axs15231b).
+  espressif/esp_lcd_axs15231b: ">=1.0.0"

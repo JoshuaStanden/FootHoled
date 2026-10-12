@@ -4,12 +4,13 @@
  *
  * This screen tree is a navigable scaffold, not a hardware integration.
  * Recon/Analyze/Expand actions deliberately route to an unavailable-service
- * screen. Settings are RAM-only until a persistent settings service exists.
+ * screen. Settings are persisted to NVS via the settings service.
  *
  * Maintenance: keep hardware access outside this file; introduce service
  * interfaces instead of calling peripheral drivers from LVGL callbacks.
  */
 #include "ui.h"
+#include "settings.h"
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
@@ -18,8 +19,6 @@ namespace {
 lv_obj_t* screen = nullptr;
 lv_obj_t* content = nullptr;
 char current_section[32] = "Home";
-int mask_length = 4;
-bool privacy_on = true;
 
 void label(lv_obj_t* parent, const char* text, int font_size_unused = 0) {
     (void)font_size_unused;
@@ -52,12 +51,16 @@ void button(lv_obj_t* parent, const char* text, lv_event_cb_t callback, void* da
 }
 // Preview uses synthetic identifiers; this is not yet the shared masking API.
 void on_mask(lv_event_t* e) {
-    mask_length = (int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e));
+    int new_len = (int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e));
+    footholed_settings_set_mask_length((uint8_t)new_len);
     lv_obj_t* preview = (lv_obj_t*)lv_event_get_user_data(e);
-    char buf[80]; snprintf(buf,sizeof(buf),"Preview: %.*s%s",mask_length,"***************","-demo-SSID");
+    char buf[80]; snprintf(buf,sizeof(buf),"Preview: %.*s%s",new_len,"***************","-demo-SSID");
     lv_label_set_text(preview,buf);
 }
-void on_privacy(lv_event_t* e) { privacy_on = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED); }
+void on_privacy(lv_event_t* e) {
+    bool on = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+    footholed_settings_set_privacy_on(on);
+}
 // Rebuild the simple alpha screen tree when navigating. A later iteration can
 // introduce reusable views and a back-stack without coupling to drivers.
 void navigate(const char* section) {
@@ -93,13 +96,15 @@ void navigate(const char* section) {
         label(content,"Module registry: discovery not connected.");
         for(const char* name : {"Discover modules","Uninitialized","Installed modules","Manual setup","Diagnostics"}) button(content,name,on_stub,(void*)name);
     } else if (!strcmp(section,"Settings")) {
-        label(content,"Settings (RAM only; NVS pending)");
+        label(content,"Settings (NVS-persisted)");
         label(content,"Privacy masking enabled");
-        lv_obj_t* sw=lv_switch_create(content); if(privacy_on) lv_obj_add_state(sw,LV_STATE_CHECKED);
+        lv_obj_t* sw=lv_switch_create(content);
+        if(footholed_settings_get_privacy_on()) lv_obj_add_state(sw,LV_STATE_CHECKED);
         lv_obj_add_event_cb(sw,on_privacy,LV_EVENT_VALUE_CHANGED,nullptr);
         label(content,"Mask leading characters (1-15)");
         lv_obj_t* slider=lv_slider_create(content);
-        lv_slider_set_range(slider,1,15);lv_slider_set_value(slider,mask_length,LV_ANIM_OFF);
+        lv_slider_set_range(slider,1,15);
+        lv_slider_set_value(slider,footholed_settings_get_mask_length(),LV_ANIM_OFF);
         lv_obj_t* preview=lv_label_create(content);
         lv_label_set_text(preview,"Preview: ****-demo-SSID");
         lv_obj_add_event_cb(slider,on_mask,LV_EVENT_VALUE_CHANGED,preview);
