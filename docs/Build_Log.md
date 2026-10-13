@@ -11,11 +11,11 @@ Mark each entry with status: **[PLANNED]**, **[IN PROGRESS]**, **[DONE — SOFTW
 
 | File | Change |
 |---|---|
-| `firmware/src/board_adapter.cpp` | Full AXS15231B QSPI display + touch init, LVGL 9 registration, LEDC backlight |
+| `firmware/src/board_adapter.cpp` | Full ST7796 SPI display + FT6336 touch init via TCA9554 reset, LVGL 9 registration, LEDC backlight (non-B board) |
 | `firmware/src/settings.h/.cpp` | NVS settings service — brightness, privacy, mask length |
 | `firmware/src/main.cpp` | Wired settings init + brightness apply into startup sequence |
 | `firmware/src/ui.cpp` | Settings screen reads/writes via settings service (no more RAM-only state) |
-| `firmware/src/idf_component.yml` | Added `espressif/esp_lcd_axs15231b` dependency |
+| `firmware/src/idf_component.yml` | Added `espressif/esp_lcd_st7796` dependency (non-B board) |
 | `firmware/src/CMakeLists.txt` | Added `settings.cpp` to build sources |
 | `firmware/platformio.ini` | Board target → `esp32-s3-devkitc-1-n16r8v`; SPIRAM + flash flags |
 | `firmware/sdkconfig.defaults` | PSRAM octal, SPI DMA, stack size |

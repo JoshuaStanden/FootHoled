@@ -5,7 +5,7 @@
  * Startup order:
  *   1. footholed_settings_init() — load NVS settings (or apply defaults)
  *   2. lv_init()                 — LVGL must be ready before board adapter
- *   3. footholed_board_init()    — register AXS15231B display + touch with LVGL
+ *   3. footholed_board_init()    — register ST7796 display + FT6336 touch with LVGL
  *   4. Apply persisted brightness to the backlight
  *   5. footholed_ui_init()       — build the LVGL screen tree
  *   6. footholed_orient_init()   — bring up IMU display auto-rotation (optional)

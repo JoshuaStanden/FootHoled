@@ -1,12 +1,12 @@
 /**
  * @file lv_conf.h
  * @brief Minimal LVGL 9.2 configuration for the FootHoled H1
- *        (Waveshare ESP32-S3-Touch-LCD-3.5B, AXS15231B QSPI, 320x480 RGB565).
+ *        (Waveshare ESP32-S3-Touch-LCD-3.5 NON-B, ST7796 SPI, 320x480 RGB565).
  *
  * Why this file exists:
  *   platformio.ini sets -D LV_CONF_INCLUDE_SIMPLE, which makes LVGL look for an
  *   lv_conf.h on the include path.  Without one, LVGL 9 either fails to build
- *   or falls back to LV_COLOR_DEPTH 32 (lv_color_t = 4 bytes).  The AXS15231B
+ *   or falls back to LV_COLOR_DEPTH 32 (lv_color_t = 4 bytes).  The ST7796
  *   panel is driven as 16-bit RGB565 (esp_lcd_panel_dev_config_t.bits_per_pixel
  *   = 16 in board_adapter.cpp), so the colour depth MUST be pinned to 16 for
  *   lv_color_t, the draw-buffer sizing, and the flush to agree.  With depth 16,
@@ -25,7 +25,7 @@
    COLOR SETTINGS
  *====================*/
 
-/* Colour depth: 16-bit RGB565 to match the AXS15231B panel. */
+/* Colour depth: 16-bit RGB565 to match the ST7796 panel. */
 #define LV_COLOR_DEPTH 16
 
 /*=========================
@@ -62,7 +62,7 @@
 
 /* Required for lv_draw_rotate(): the firmware software-rotates each partial
  * tile in board_adapter.cpp:flush_cb() for IMU-driven display auto-rotation,
- * because the AXS15231B is not driven with hardware rotation. Rotation is a
+ * because the ST7796 is not driven with hardware rotation. Rotation is a
  * "complex" software-draw feature, so this MUST stay enabled while
  * auto-rotation is in use. */
 #define LV_DRAW_SW_COMPLEX          1

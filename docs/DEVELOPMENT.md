@@ -6,7 +6,7 @@ Target branch: `dev`. Work on short-lived feature branches and open PRs into `de
 Open `prototype/index.html` locally (no server required). This tests **interaction design**, not LVGL or hardware. Settings persist in browser localStorage; reset with the UI button.
 
 ## Firmware foundation
-PlatformIO and ESP-IDF project is under `firmware/`. The default target is `esp32-s3-devkitc-1` as a **toolchain placeholder**, not a verified Waveshare board definition. `firmware/src/board_adapter.cpp` deliberately does not register a display or touch device. Until replaced, there is **no physical LCD output**. See Waveshare's official `05_lvgl_example` for the **3.5B** variant: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5B/ESP-IDF
+PlatformIO and ESP-IDF project is under `firmware/`. The target is `esp32-s3-devkitc-1-n16r8v` as a **stock match** for the ESP32-S3R8 (no dedicated Waveshare 3.5 board JSON exists yet). `firmware/src/board_adapter.cpp` registers an ST7796 SPI display + FT6336 touch, but GPIO numbers are **unverified placeholders** until confirmed from the schematic/demo, so there is **no guaranteed LCD output** until that is done and the firmware is flashed. See Waveshare's official examples for the **non-B 3.5** variant: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5
 
 Expected commands after installing PlatformIO: `cd firmware && pio run`, `pio run -t upload`, `pio device monitor`. Build status is **not verified in this environment** (no ESP-IDF/PlatformIO toolchain installed). Do not flash until pin mappings and display drivers are checked.
 

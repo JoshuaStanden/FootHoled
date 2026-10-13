@@ -14,6 +14,7 @@
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
+#include <initializer_list>
 
 namespace {
 lv_obj_t* screen = nullptr;

@@ -2,7 +2,7 @@
 
 1. This package targets the **dev** branch. Never force-push or modify `main` as part of this work.
 2. Read `hardware/components.yaml`, `docs/ARCHITECTURE.md`, and `docs/UI_NAVIGATION.md` before changing source.
-3. Target **Waveshare ESP32-S3-Touch-LCD-3.5B**, not the similarly named 3.5 model. Display controller **AXS15231B (QSPI)**, touch support requires the vendor BSP. Never substitute ST7789/ILI9488 drivers without verification.
+3. Target **Waveshare ESP32-S3-Touch-LCD-3.5** (the NON-B / plain 3.5 model), not the similarly named 3.5B. Display controller **ST7796 (standard SPI)**, touch controller **FT6336 (I2C)**. The LCD/touch reset lines route through a **TCA9554 I2C expander**. Never substitute the 3.5B's AXS15231B QSPI driver, or ST7789/ILI9488 drivers, without verification.
 4. Do not invent GPIO mappings, voltage ratings, pinouts, board revisions, or hardware support. Mark unknowns `unverified`.
 5. The only primary home-screen destinations are **Recon**, **Analyze**, **Expand**. Settings is a utility destination.
 6. Separate UI and hardware services. UI may display **DEMO** data but must never claim it is live.

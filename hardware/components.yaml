@@ -1,13 +1,13 @@
 # FootHoled H1 inventory, 2026-10-11. Exact board/module revisions must be checked physically.
 components:
-  - id: main_waveshare_3_5b
+  - id: main_waveshare_3_5
     manufacturer: Waveshare
-    model: ESP32-S3-Touch-LCD-3.5B
+    model: ESP32-S3-Touch-LCD-3.5
     ownership: received
     integration: pending_board_bringup
-    verified_family: {mcu: ESP32-S3R8, lcd: AXS15231B, resolution: '320x480', imu: QMI8658, rtc: PCF85063, pmic: AXP2101, audio: ES8311}
+    verified_family: {mcu: ESP32-S3R8, lcd: ST7796, lcd_bus: SPI, touch: FT6336, touch_bus: I2C, io_expander: TCA9554, resolution: '320x480', imu: QMI8658, rtc: PCF85063, pmic: AXP2101, audio: ES8311}
     exact_revision: unverified
-    reference: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5B
+    reference: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5
   - {id: gpio_mcp23017, manufacturer: Microchip, model: MCP23017 breakout, ownership: received, integration: pending, revision: unverified, bus: I2C}
   - {id: power_ina228, manufacturer: Texas Instruments, model: INA228 breakout, ownership: received, integration: pending, revision: unverified, bus: I2C}
   - id: power_foriot_dual18650

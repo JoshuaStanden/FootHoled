@@ -20,7 +20,7 @@ FootHoled H1 is an experimental, modular ESP32-S3 handheld for authorized wirele
 
 ## Current state
 - **Interactive browser prototype:** Open [`prototype/index.html`](prototype/index.html) in a browser. Navigation, settings, demo module discovery, and sample privacy masking work. This is not device firmware.
-- **LVGL 9 source:** `firmware/` contains native UI code and a PlatformIO/ESP-IDF foundation. **The Waveshare AXS15231B QSPI display and touch board-support adapter is not yet integrated or tested.** It is not yet a flash-and-use touchscreen release.
+- **LVGL 9 source:** `firmware/` contains native UI code and a PlatformIO/ESP-IDF foundation. **This repo targets the NON-B Waveshare 3.5 board — ST7796 SPI display + FT6336 I2C touch. The board-support adapter is written but not yet compiled, flashed, or tested on hardware.** It is not yet a flash-and-use touchscreen release.
 - **Hardware functions:** Radio, GNSS, NFC, IR, storage and module probing are currently stubs; demonstration data is explicitly labeled.
 
 ## Hardware direction
@@ -44,7 +44,7 @@ FootHoled H1 is an experimental, modular ESP32-S3 handheld for authorized wirele
 ## Development entry points
 1. Read [`AGENTS.md`](AGENTS.md), [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), and [`hardware/components.yaml`](hardware/components.yaml).
 2. Open `prototype/index.html` and explore Recon / Analyze / Expand and Settings.
-3. Implement and verify the Waveshare **ESP32-S3-Touch-LCD-3.5B** board adapter using the *3.5B* vendor examples, then connect `firmware/src/ui.cpp` to real LVGL display/touch registration.
+3. Verify the Waveshare **ESP32-S3-Touch-LCD-3.5 (non-B)** board adapter — fill in the unverified GPIOs/TCA9554 bits from the *non-B* vendor demo/schematic, then compile, flash, and confirm real LVGL display/touch output.
 4. Add real hardware modules through the service interface, never directly in UI event callbacks.
 
 ## Documents

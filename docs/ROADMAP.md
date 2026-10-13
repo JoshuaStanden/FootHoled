@@ -5,14 +5,14 @@
 - [x] Preserve original README ASCII header and PNG logo
 - [x] Clickable offline browser prototype with Recon / Analyze / Expand, Settings, privacy preview, and simulated module setup
 - [x] LVGL 9 UI source foundation
-- [x] AXS15231B QSPI display + capacitive touch BSP integration (`board_adapter.cpp`) — sourced from Waveshare official BSP; **awaiting compile + flash test on physical board**
+- [x] ST7796 SPI display + FT6336 capacitive touch BSP integration (`board_adapter.cpp`) — non-B board, via TCA9554 reset expander; **GPIOs unverified, awaiting compile + flash test on physical board**
 - [x] PlatformIO board target corrected (`esp32-s3-devkitc-1-n16r8v`), SPIRAM/flash flags set
 - [x] `partitions.csv` for 16 MB flash (NVS + factory 6 MB + OTA 6 MB + SPIFFS + NVS keys)
 - [x] NVS settings service — brightness, privacy masking, mask length persisted across reboots
 - [x] Verified GPIO pin map documented (`docs/H0.1_Pin_Map.md`)
-- [ ] **Compile, flash, and verify firmware on physical Waveshare 3.5B board** ← next hardware step
+- [ ] **Compile, flash, and verify firmware on physical Waveshare 3.5 (non-B) board** ← next hardware step
 - [ ] Confirm PSRAM mode (octal vs quad) on physical board revision
-- [ ] Verify PlatformIO/ESP-IDF build with `espressif/esp_lcd_axs15231b` component
+- [ ] Verify PlatformIO/ESP-IDF build with `espressif/esp_lcd_st7796` component
 
 ## Hardware bringup
 - [ ] Display brightness control — LEDC code written; NVS persistence wired; TODO(HW): tune on real board

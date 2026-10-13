@@ -4,7 +4,7 @@ The authoritative structured inventory is [`../hardware/components.yaml`](../har
 
 | Component | Exact identification | Possession | H1 integration |
 |---|---|---|---|
-| Main board | Waveshare ESP32-S3-Touch-LCD-3.5B | Received | Not yet verified |
+| Main board | Waveshare ESP32-S3-Touch-LCD-3.5 (non-B) | Received | Not yet verified |
 | GPIO expander | MCP23017 (module revision unverified) | Received | Pending |
 | Power monitor | INA228 (module revision unverified) | Received | Pending |
 | Battery holder | Foriot dual 18650, 3V/5V outputs, level indicator, charging and protection; exact model unverified | Received | Electrical verification pending |
@@ -24,10 +24,10 @@ The authoritative structured inventory is [`../hardware/components.yaml`](../har
 | Infrared | TX/RX modules TBD | Planned | Not purchased |
 | Expansion port | 12-pin interface, electrical specification TBD | Planned | Not built |
 
-### Confirmed 3.5B board family details
-ESP32-S3R8, 320×480 capacitive LCD, AXS15231B QSPI LCD controller, QMI8658 IMU, PCF85063 RTC, AXP2101 PMIC, ES8311 audio codec, TF card slot. **Flash/PSRAM capacities and revision should be checked on the exact received board before hard-coding memory assumptions.**
+### Confirmed 3.5 (non-B) board family details
+ESP32-S3R8, 320×480 capacitive LCD, **ST7796 SPI LCD controller, FT6336 I2C touch, TCA9554 I/O expander**, QMI8658 IMU, PCF85063 RTC, AXP2101 PMIC, ES8311 audio codec, TF card slot. **Flash/PSRAM capacities and revision should be checked on the exact received board before hard-coding memory assumptions.**
 
-Sources: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5B and https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5B/ESP-IDF
+Sources: https://docs.waveshare.com/ESP32-S3-Touch-LCD-3.5 and https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-3.5
 
 ### Electrical warnings
 - Do **not** connect the Foriot 3V/5V outputs to the Waveshare battery input without a verified schematic and rail measurement. Battery inputs can expect a single-cell Li-ion voltage; 5V is not equivalent.

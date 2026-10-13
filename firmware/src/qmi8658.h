@@ -10,7 +10,7 @@
  * needs the accelerometer.
  *
  * Hardware: QST QMI8658, I2C address 0x6A (SA0 = GND) or 0x6B (SA0 = VDD).
- * Bus: I2C0, shared with touch (AXS15231B), RTC (PCF85063), PMIC (AXP2101),
+ * Bus: I2C0, shared with touch (FT6336), RTC (PCF85063), PMIC (AXP2101),
  *      audio (ES8311) — SDA GPIO 8, SCL GPIO 7.
  *
  * Reference: QST QMI8658A datasheet (Rev 1.x), register map section.

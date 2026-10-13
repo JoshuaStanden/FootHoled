@@ -1,1 +1,21 @@
-idf_component_register(SRCS "main.cpp" "ui.cpp" "board_adapter.cpp" "settings.cpp" "mcp23017.cpp" "ina228.cpp" "qmi8658.cpp" INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "ui.cpp"
+        "board_adapter.cpp"
+        "settings.cpp"
+        "mcp23017.cpp"
+        "ina228.cpp"
+        "qmi8658.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_ledc
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_driver_spi
+        esp_lcd
+        esp_timer
+        nvs_flash
+        lvgl
+        espressif__esp_lcd_st7796
+)

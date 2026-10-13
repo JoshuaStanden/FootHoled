@@ -7,3 +7,6 @@ __pycache__/
 .DS_Store
 .vscode/
 *.log
+
+# Large 3D case-design models excluded from the firmware repo (see DEF CON-exclusive note)
+3d models for case design/
