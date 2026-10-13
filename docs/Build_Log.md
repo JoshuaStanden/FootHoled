@@ -69,6 +69,13 @@ Mark each entry with status: **[PLANNED]**, **[IN PROGRESS]**, **[DONE — SOFTW
 - [ ] Touch coordinates correct orientation (portrait 320×480)
 - [ ] Settings survive reboot (NVS working)
 - [ ] I2C bus: QMI8658 IMU responds at address 0x6A or 0x6B
+- [ ] Auto-rotate: WHO_AM_I reads 0x05 (serial log "QMI8658 initialised")
+- [ ] Auto-rotate: tilting the device rotates the UI through all 4 orientations
+- [ ] Auto-rotate: axis mapping correct (if a pose rotates the WRONG way, adjust
+      the single calibration block in qmi8658.cpp:classify_orientation())
+- [ ] Auto-rotate: touch still lands on the right widget after rotating
+- [ ] Auto-rotate: lying flat holds the last orientation (no jitter)
+- [ ] Auto-rotate: can be disabled via the auto_rotate setting
 - [ ] I2C bus: PCF85063 RTC responds at 0x51
 - [ ] I2C bus: AXP2101 PMIC responds at 0x34
 - [ ] SD card mounts at `/sdcard`

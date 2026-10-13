@@ -60,6 +60,13 @@
 #define LV_DRAW_BUF_STRIDE_ALIGN    1
 #define LV_DRAW_BUF_ALIGN           4
 
+/* Required for lv_draw_rotate(): the firmware software-rotates each partial
+ * tile in board_adapter.cpp:flush_cb() for IMU-driven display auto-rotation,
+ * because the AXS15231B is not driven with hardware rotation. Rotation is a
+ * "complex" software-draw feature, so this MUST stay enabled while
+ * auto-rotation is in use. */
+#define LV_DRAW_SW_COMPLEX          1
+
 /*====================
    LOGGING
  *====================*/

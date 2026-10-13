@@ -61,6 +61,10 @@ void on_privacy(lv_event_t* e) {
     bool on = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
     footholed_settings_set_privacy_on(on);
 }
+void on_auto_rotate(lv_event_t* e) {
+    bool on = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+    footholed_settings_set_auto_rotate(on);
+}
 // Rebuild the simple alpha screen tree when navigating. A later iteration can
 // introduce reusable views and a back-stack without coupling to drivers.
 void navigate(const char* section) {
@@ -101,6 +105,10 @@ void navigate(const char* section) {
         lv_obj_t* sw=lv_switch_create(content);
         if(footholed_settings_get_privacy_on()) lv_obj_add_state(sw,LV_STATE_CHECKED);
         lv_obj_add_event_cb(sw,on_privacy,LV_EVENT_VALUE_CHANGED,nullptr);
+        label(content,"Auto-rotate display (IMU)");
+        lv_obj_t* rot=lv_switch_create(content);
+        if(footholed_settings_get_auto_rotate()) lv_obj_add_state(rot,LV_STATE_CHECKED);
+        lv_obj_add_event_cb(rot,on_auto_rotate,LV_EVENT_VALUE_CHANGED,nullptr);
         label(content,"Mask leading characters (1-15)");
         lv_obj_t* slider=lv_slider_create(content);
         lv_slider_set_range(slider,1,15);

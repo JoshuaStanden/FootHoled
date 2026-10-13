@@ -29,6 +29,7 @@
  */
 
 #include "board_adapter.h"
+#include "settings.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -40,6 +41,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_axs15231b.h"
+#include "qmi8658.h"
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -175,6 +177,24 @@ static esp_lcd_panel_io_handle_t  s_io_handle    = nullptr;
 static esp_lcd_panel_handle_t     s_panel_handle = nullptr;
 static i2c_master_bus_handle_t    s_i2c_bus      = nullptr;
 
+// Active LVGL display, retained so the auto-rotation service can call
+// lv_display_set_rotation() on it. LVGL rotates BOTH rendering and touch-input
+// coordinates when the display rotation changes, so touch_read_cb() must NOT
+// transform coordinates itself — that would double-rotate.
+static lv_display_t *s_lvgl_disp = nullptr;
+
+// QMI8658 IMU handle for display auto-rotation. nullptr when the IMU is absent
+// or disabled; auto-rotation is skipped in that case and the UI still works.
+static qmi8658_handle_t s_imu = nullptr;
+
+// Last orientation actually applied to the display, so we only call
+// lv_display_set_rotation() on an actual change (it forces a full redraw).
+static qmi8658_orientation_t s_applied_orient = QMI8658_ORIENT_PORTRAIT;
+
+// Set once we have attempted IMU bring-up and it failed (chip absent), so the
+// self-gating poll does not re-probe and re-log a missing IMU every cycle.
+static bool s_imu_init_failed = false;
+
 // LVGL draw buffers (allocated once; stored in SPIRAM).  Two buffers enable
 // pipelining: LVGL renders the next tile into buf2 while buf1's contents are
 // still being DMA'd to the panel, and vice versa.  Safe only because the async
@@ -182,6 +202,13 @@ static i2c_master_bus_handle_t    s_i2c_bus      = nullptr;
 // immediately in flush_cb().
 static lv_color_t *s_lvgl_buf1 = nullptr;
 static lv_color_t *s_lvgl_buf2 = nullptr;
+
+// Scratch buffer for software rotation. The AXS15231B is driven without
+// hardware rotation, so when the display is rotated 90/180/270 deg each
+// partial tile must be rotated here (per the LVGL rotation docs) before it is
+// sent to the panel. Sized to one tile (FH_BUF_SIZE), same as a draw buffer.
+// At rotation 0 this buffer is untouched and the fast path copies nothing.
+static lv_color_t *s_rotate_buf = nullptr;
 
 // ---------------------------------------------------------------------------
 // LVGL 9 flush callback — called from the LVGL task to push pixels to the LCD
@@ -193,16 +220,41 @@ static lv_color_t *s_lvgl_buf2 = nullptr;
 // corruption).  Instead LVGL is signalled from colour_trans_done_cb(), which
 // the panel IO fires when the transfer genuinely completes.
 //
+// ROTATION: lv_display_set_rotation() only swaps LVGL's logical resolution and
+// rotates touch input — it does NOT rotate the pixels. The AXS15231B is driven
+// without hardware rotation, so for any non-zero rotation we rotate each
+// partial tile into s_rotate_buf with lv_draw_rotate() before sending it, and
+// send the ROTATED area. This follows the LVGL "rotate to another buffer and
+// send to a display controller" pattern.
+//
 // If the transfer fails to even be queued we have no completion event coming,
 // so we release the buffer here to avoid hanging the LVGL render task forever.
 // ---------------------------------------------------------------------------
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
+    lv_area_t out_area = *area;
+    uint8_t  *out_px   = px_map;
+
+    lv_display_rotation_t rot = lv_display_get_rotation(disp);
+    if (rot != LV_DISPLAY_ROTATION_0 && s_rotate_buf) {
+        lv_color_format_t cf = lv_display_get_color_format(disp);
+        lv_display_rotate_area(disp, &out_area);  // where the tile lands rotated
+
+        int32_t src_w = lv_area_get_width(area);
+        int32_t src_h = lv_area_get_height(area);
+        uint32_t src_stride  = lv_draw_buf_width_to_stride(src_w, cf);
+        uint32_t dest_stride = lv_draw_buf_width_to_stride(lv_area_get_width(&out_area), cf);
+
+        lv_draw_rotate(px_map, s_rotate_buf, src_w, src_h,
+                       src_stride, dest_stride, rot, cf);
+        out_px = (uint8_t *)s_rotate_buf;
+    }
+
     esp_err_t err = esp_lcd_panel_draw_bitmap(
         s_panel_handle,
-        area->x1, area->y1,
-        area->x2 + 1, area->y2 + 1,
-        px_map
+        out_area.x1, out_area.y1,
+        out_area.x2 + 1, out_area.y2 + 1,
+        out_px
     );
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "draw_bitmap failed: %s — releasing buffer to avoid stall",
@@ -213,6 +265,12 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     }
     // On success: do NOT signal here. colour_trans_done_cb() releases the
     // buffer once DMA has finished reading it.
+    //
+    // NOTE: when rotating we DMA out of s_rotate_buf while LVGL's own draw
+    // buffer is released on completion. Because flush_cb is not re-entered
+    // until lv_display_flush_ready() fires, s_rotate_buf is not overwritten
+    // mid-transfer. (A single rotate buffer is therefore safe but serialises
+    // the pipeline for rotated frames — acceptable; rotation is infrequent.)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +489,7 @@ bool footholed_board_init(void)
         ESP_LOGE(TAG, "lv_display_create failed");
         return false;
     }
+    s_lvgl_disp = lvgl_disp;   // retained for the auto-rotation service
 
     // Register the panel-IO transfer-complete callback now that we have a
     // display to signal.  colour_trans_done_cb() calls lv_display_flush_ready()
@@ -451,10 +510,15 @@ bool footholed_board_init(void)
         FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     s_lvgl_buf2 = (lv_color_t *)heap_caps_malloc(
         FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-    if (!s_lvgl_buf1 || !s_lvgl_buf2) {
+    // Rotation scratch buffer (same tile size). Only used when the display is
+    // rotated; allocating it up front keeps flush_cb allocation-free.
+    s_rotate_buf = (lv_color_t *)heap_caps_malloc(
+        FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    if (!s_lvgl_buf1 || !s_lvgl_buf2 || !s_rotate_buf) {
         ESP_LOGE(TAG, "LVGL draw buffer allocation failed (SPIRAM)");
         if (s_lvgl_buf1) { heap_caps_free(s_lvgl_buf1); s_lvgl_buf1 = nullptr; }
         if (s_lvgl_buf2) { heap_caps_free(s_lvgl_buf2); s_lvgl_buf2 = nullptr; }
+        if (s_rotate_buf){ heap_caps_free(s_rotate_buf);s_rotate_buf = nullptr; }
         return false;
     }
 
@@ -490,4 +554,92 @@ bool footholed_board_init(void)
     // TODO(HW): verify on physical hardware — do not treat as working until
     // compiled, flashed, and tested on the actual Waveshare 3.5B board.
     return true;
+}
+
+
+// ===========================================================================
+// Display auto-rotation service (QMI8658 IMU)
+// ---------------------------------------------------------------------------
+// footholed_orient_init() brings up the IMU on the shared I2C0 bus after the
+// display exists. footholed_orient_poll() is called periodically from the main
+// loop; it reads the gravity vector, maps it to one of the four display
+// rotations, and applies it to the LVGL display only when it changes.
+//
+// Rotation is applied with lv_display_set_rotation(), which swaps LVGL's
+// logical resolution and transforms touch-input coordinates automatically.
+// The actual PIXEL rotation is done per-tile in flush_cb() via lv_draw_rotate()
+// (the AXS15231B is not driven with hardware rotation), so touch handling needs
+// no change here — LVGL already rotates the input points.
+// ===========================================================================
+
+// Map our orientation enum onto LVGL's rotation enum.
+static lv_display_rotation_t orient_to_lv(qmi8658_orientation_t o)
+{
+    switch (o) {
+        case QMI8658_ORIENT_PORTRAIT:         return LV_DISPLAY_ROTATION_0;
+        case QMI8658_ORIENT_LANDSCAPE_LEFT:   return LV_DISPLAY_ROTATION_90;
+        case QMI8658_ORIENT_PORTRAIT_FLIPPED: return LV_DISPLAY_ROTATION_180;
+        case QMI8658_ORIENT_LANDSCAPE_RIGHT:  return LV_DISPLAY_ROTATION_270;
+        default:                              return LV_DISPLAY_ROTATION_0;
+    }
+}
+
+bool footholed_orient_init(void)
+{
+    if (!s_i2c_bus) {
+        ESP_LOGW(TAG, "Auto-rotate: I2C bus not ready, IMU not started");
+        return false;
+    }
+    // Try the primary address first, then the alternate (SA0 strap varies by
+    // board revision). TODO(HW): confirm which address the real board uses.
+    esp_err_t err = qmi8658_init(s_i2c_bus, QMI8658_I2C_ADDR_LOW, &s_imu);
+    if (err != ESP_OK) {
+        err = qmi8658_init(s_i2c_bus, QMI8658_I2C_ADDR_HIGH, &s_imu);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Auto-rotate: QMI8658 not found — auto-rotation disabled");
+        s_imu = nullptr;
+        s_imu_init_failed = true;   // don't re-probe/re-log every poll
+        return false;   // non-fatal: UI runs without auto-rotation
+    }
+    s_imu_init_failed = false;
+    ESP_LOGI(TAG, "Auto-rotate: IMU ready");
+    return true;
+}
+
+void footholed_orient_poll(void)
+{
+    if (!s_lvgl_disp) return;
+
+    // Honour the live setting so the Settings toggle takes effect without a
+    // reboot. When auto-rotation is turned OFF, snap back to upright portrait
+    // once (so the UI is not left stuck in a rotated pose) and stop polling.
+    if (!footholed_settings_get_auto_rotate()) {
+        if (s_applied_orient != QMI8658_ORIENT_PORTRAIT) {
+            lv_display_set_rotation(s_lvgl_disp, LV_DISPLAY_ROTATION_0);
+            s_applied_orient = QMI8658_ORIENT_PORTRAIT;
+        }
+        return;
+    }
+
+    // Enabled but never brought up (toggled on at runtime after boot, or the
+    // first poll): lazily initialise the IMU now. Non-fatal if absent, and we
+    // only try once — s_imu_init_failed stops a missing IMU being re-probed.
+    if (!s_imu) {
+        if (s_imu_init_failed) return;
+        if (!footholed_orient_init()) return;
+    }
+
+    qmi8658_orientation_t o;
+    if (qmi8658_orientation(s_imu, &o) != ESP_OK) return;
+
+    // FLAT (or an ambiguous diagonal) means "keep what we have": do nothing so
+    // the screen holds its last orientation instead of snapping to a guess.
+    if (o == QMI8658_ORIENT_FLAT) return;
+
+    if (o != s_applied_orient) {
+        lv_display_set_rotation(s_lvgl_disp, orient_to_lv(o));
+        s_applied_orient = o;
+        ESP_LOGI(TAG, "Auto-rotate: orientation -> %d", (int)o);
+    }
 }

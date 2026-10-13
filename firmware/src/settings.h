@@ -16,6 +16,7 @@
  *   "brightness"   uint8   0–100 (backlight %)
  *   "privacy_on"   uint8   0 = off, 1 = on
  *   "mask_len"     uint8   1–15 (privacy mask character count)
+ *   "auto_rotate"  uint8   0 = off, 1 = on (IMU display auto-rotation)
  */
 #pragma once
 #include <stdbool.h>
@@ -59,6 +60,16 @@ bool footholed_settings_get_privacy_on(void);
 /** @brief Set and persist privacy masking enabled flag. */
 void footholed_settings_set_privacy_on(bool on);
 
+// ---------------------------------------------------------------------------
+// Display auto-rotation
+// ---------------------------------------------------------------------------
+
+/** @brief Get whether IMU-driven display auto-rotation is enabled (default on). */
+bool footholed_settings_get_auto_rotate(void);
+
+/** @brief Set and persist the display auto-rotation enabled flag. */
+void footholed_settings_set_auto_rotate(bool on);
+
 /** @brief Get privacy mask length (1–15 leading characters masked). */
 uint8_t footholed_settings_get_mask_length(void);
 
@@ -75,7 +86,7 @@ void footholed_settings_set_mask_length(uint8_t len);
 /**
  * @brief Reset all settings to factory defaults and persist to NVS.
  *
- * Defaults: brightness=75, privacy_on=true, mask_length=4.
+ * Defaults: brightness=75, privacy_on=true, mask_length=4, auto_rotate=true.
  * Used by the UI "Reset to defaults" action (future).
  */
 void footholed_settings_reset_defaults(void);

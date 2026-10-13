@@ -27,6 +27,7 @@ static const char *NVS_NS     = "fh_settings";
 static const char *KEY_BRIGHTNESS = "brightness";
 static const char *KEY_PRIVACY_ON = "privacy_on";
 static const char *KEY_MASK_LEN   = "mask_len";
+static const char *KEY_AUTO_ROTATE = "auto_rotate";
 
 // ---------------------------------------------------------------------------
 // Compile-time defaults
@@ -34,6 +35,7 @@ static const char *KEY_MASK_LEN   = "mask_len";
 #define DEFAULT_BRIGHTNESS  75u
 #define DEFAULT_PRIVACY_ON  1u
 #define DEFAULT_MASK_LEN    4u
+#define DEFAULT_AUTO_ROTATE 1u
 
 // ---------------------------------------------------------------------------
 // In-RAM settings cache
@@ -42,6 +44,7 @@ typedef struct {
     uint8_t brightness;   ///< Backlight %, 0–100
     uint8_t privacy_on;   ///< 0 = off, 1 = on
     uint8_t mask_length;  ///< 1–15 characters
+    uint8_t auto_rotate;  ///< 0 = off, 1 = on (IMU display auto-rotation)
 } fh_settings_t;
 
 static fh_settings_t   s_cfg      = {};
@@ -121,6 +124,7 @@ bool footholed_settings_init(void) {
         s_cfg.brightness  = DEFAULT_BRIGHTNESS;
         s_cfg.privacy_on  = DEFAULT_PRIVACY_ON;
         s_cfg.mask_length = DEFAULT_MASK_LEN;
+        s_cfg.auto_rotate = DEFAULT_AUTO_ROTATE;
         return false;
     }
 
@@ -137,6 +141,7 @@ bool footholed_settings_init(void) {
         s_cfg.brightness  = nvs_read_u8(h, KEY_BRIGHTNESS, DEFAULT_BRIGHTNESS);
         s_cfg.privacy_on  = nvs_read_u8(h, KEY_PRIVACY_ON, DEFAULT_PRIVACY_ON);
         s_cfg.mask_length = nvs_read_u8(h, KEY_MASK_LEN,   DEFAULT_MASK_LEN);
+        s_cfg.auto_rotate = nvs_read_u8(h, KEY_AUTO_ROTATE, DEFAULT_AUTO_ROTATE);
         nvs_close(h);
     } else {
         // Namespace doesn't exist yet (genuine first boot) — use defaults
@@ -144,6 +149,7 @@ bool footholed_settings_init(void) {
         s_cfg.brightness  = DEFAULT_BRIGHTNESS;
         s_cfg.privacy_on  = DEFAULT_PRIVACY_ON;
         s_cfg.mask_length = DEFAULT_MASK_LEN;
+        s_cfg.auto_rotate = DEFAULT_AUTO_ROTATE;
     }
 
     // Clamp values in case NVS held out-of-range data from a prior firmware
@@ -152,12 +158,14 @@ bool footholed_settings_init(void) {
     if (s_cfg.mask_length < 1 || s_cfg.mask_length > 15) {
         s_cfg.mask_length = DEFAULT_MASK_LEN;
     }
+    if (s_cfg.auto_rotate > 1)   s_cfg.auto_rotate = DEFAULT_AUTO_ROTATE;
 
     s_ready = true;
-    ESP_LOGI(TAG, "Settings loaded — brightness=%u%% privacy=%s mask_len=%u",
+    ESP_LOGI(TAG, "Settings loaded — brightness=%u%% privacy=%s mask_len=%u auto_rotate=%s",
              s_cfg.brightness,
              s_cfg.privacy_on ? "on" : "off",
-             s_cfg.mask_length);
+             s_cfg.mask_length,
+             s_cfg.auto_rotate ? "on" : "off");
     return true;
 }
 
@@ -203,6 +211,26 @@ void footholed_settings_set_privacy_on(bool on) {
 }
 
 // ---------------------------------------------------------------------------
+// Display auto-rotation on/off
+// ---------------------------------------------------------------------------
+
+bool footholed_settings_get_auto_rotate(void) {
+    if (!s_ready) return (bool)DEFAULT_AUTO_ROTATE;
+    if (!lock())  return (bool)DEFAULT_AUTO_ROTATE;
+    bool v = (bool)s_cfg.auto_rotate;
+    unlock();
+    return v;
+}
+
+void footholed_settings_set_auto_rotate(bool on) {
+    if (!lock()) return;
+    s_cfg.auto_rotate = on ? 1u : 0u;
+    unlock();
+    nvs_write_u8(KEY_AUTO_ROTATE, on ? 1u : 0u);
+    ESP_LOGD(TAG, "auto_rotate -> %s", on ? "true" : "false");
+}
+
+// ---------------------------------------------------------------------------
 // Mask length
 // ---------------------------------------------------------------------------
 
@@ -232,5 +260,6 @@ void footholed_settings_reset_defaults(void) {
     footholed_settings_set_brightness(DEFAULT_BRIGHTNESS);
     footholed_settings_set_privacy_on((bool)DEFAULT_PRIVACY_ON);
     footholed_settings_set_mask_length(DEFAULT_MASK_LEN);
+    footholed_settings_set_auto_rotate((bool)DEFAULT_AUTO_ROTATE);
     ESP_LOGI(TAG, "Settings reset to defaults");
 }

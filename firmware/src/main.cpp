@@ -8,7 +8,8 @@
  *   3. footholed_board_init()    — register AXS15231B display + touch with LVGL
  *   4. Apply persisted brightness to the backlight
  *   5. footholed_ui_init()       — build the LVGL screen tree
- *   6. LVGL tick/handler loop
+ *   6. footholed_orient_init()   — bring up IMU display auto-rotation (optional)
+ *   7. LVGL tick/handler loop (also polls orientation ~4 Hz)
  *
  * IMPORTANT: footholed_board_init() returns false until the Waveshare 3.5B
  * display/touch BSP is compiled, flashed, and verified on real hardware.
@@ -63,14 +64,25 @@ extern "C" void app_main(void) {
 
         // 5. Build the LVGL screen tree.
         footholed_ui_init();
+
+        // 6. Bring up IMU-driven display auto-rotation (non-fatal if absent).
+        //    Gated on the persisted setting so the user can turn it off.
+        if (footholed_settings_get_auto_rotate()) {
+            if (!footholed_orient_init()) {
+                ESP_LOGW(TAG, "Auto-rotation unavailable (IMU not detected)");
+            }
+        } else {
+            ESP_LOGI(TAG, "Auto-rotation disabled in settings");
+        }
     } else {
         ESP_LOGW(TAG, "UI unavailable — display/touch adapter not yet verified on hardware.");
     }
 
-    // 6. LVGL tick and timer handler loop.
+    // 7. LVGL tick and timer handler loop.
     //    Convert microsecond wall time into LVGL millisecond ticks.
     //    A future display driver may provide its own tick source; avoid double-ticking.
     int64_t last = esp_timer_get_time();
+    uint32_t orient_div = 0;   // throttle: poll the IMU every ~250 ms, not every 10 ms
     while (true) {
         int64_t now     = esp_timer_get_time();
         uint32_t elapsed = (uint32_t)((now - last) / 1000);
@@ -78,7 +90,15 @@ extern "C" void app_main(void) {
             lv_tick_inc(elapsed);
             last += (int64_t)elapsed * 1000;
         }
-        if (display_ready) lv_timer_handler();
+        if (display_ready) {
+            lv_timer_handler();
+            // Orientation changes slowly; polling at ~4 Hz is plenty and keeps
+            // the shared I2C bus free for touch. 25 * 10 ms = 250 ms.
+            if (++orient_div >= 25) {
+                orient_div = 0;
+                footholed_orient_poll();   // no-ops if the IMU is unavailable
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
