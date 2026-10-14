@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "ui.cpp"
+        "wifi_scan.cpp"
         "splash_logo.cpp"
         "board_adapter.cpp"
         "settings.cpp"
@@ -16,6 +17,9 @@ idf_component_register(
         esp_driver_spi
         esp_lcd
         esp_timer
+        esp_wifi
+        esp_event
+        esp_netif
         nvs_flash
         lvgl
         espressif__esp_lcd_st7796

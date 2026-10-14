@@ -12,6 +12,7 @@
 #include "ui.h"
 #include "splash_logo.h"
 #include "settings.h"
+#include "wifi_scan.h"
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +72,64 @@ static void splash_done(lv_timer_t* timer) {
 }
 
 lv_obj_t* content = nullptr;
+lv_obj_t* wifi_list = nullptr;
+lv_obj_t* wifi_status = nullptr;
+lv_timer_t* wifi_timer = nullptr;
+uint32_t wifi_last_generation = UINT32_MAX;
+
+void mask_identifier(char *s) {
+    if (!footholed_settings_get_privacy_on()) return;
+    size_t len = strlen(s);
+    size_t mask = footholed_settings_get_mask_length();
+    if (mask > len) mask = len;
+    for (size_t i=0; i<mask; ++i) s[i]='*';
+}
+const char* auth_name(uint8_t a) {
+    switch (a) {
+        case 0: return "Open";
+        case 1: return "WEP";
+        case 2: return "WPA";
+        case 3: return "WPA2";
+        case 4: return "WPA/WPA2";
+        case 5: return "Enterprise";
+        case 6: return "WPA3";
+        case 7: return "WPA2/WPA3";
+        default: return "Secured";
+    }
+}
+void wifi_refresh(lv_timer_t*) {
+    if (!wifi_list || !wifi_status) return;
+    FootHoledAP aps[48];
+    uint32_t gen=0;
+    bool running=false, error=false;
+    size_t n=footholed_wifi_snapshot(aps,48,&gen,&running,&error);
+    if (gen == wifi_last_generation && !error) return;
+    wifi_last_generation=gen;
+    if (error) lv_label_set_text(wifi_status,"Wi-Fi scan failed; retrying...");
+    else if (!n) lv_label_set_text(wifi_status,"Scanning for access points...");
+    else lv_label_set_text_fmt(wifi_status,"%u APs found / refreshing",(unsigned)n);
+    lv_obj_clean(wifi_list);
+    for (size_t i=0;i<n;++i) {
+        char ssid[33];
+        strncpy(ssid, aps[i].ssid, sizeof(ssid)); ssid[32]=0;
+        if (!ssid[0]) strcpy(ssid,"<hidden>");
+        char mac[18];
+        snprintf(mac,sizeof(mac),"%02X:%02X:%02X:%02X:%02X:%02X",
+                 aps[i].bssid[0],aps[i].bssid[1],aps[i].bssid[2],
+                 aps[i].bssid[3],aps[i].bssid[4],aps[i].bssid[5]);
+        mask_identifier(ssid); mask_identifier(mac);
+        char line[180];
+        snprintf(line,sizeof(line),"%s\n%s  |  %d dBm  |  CH %u  |  %s",
+                 ssid,mac,(int)aps[i].rssi,(unsigned)aps[i].channel,auth_name(aps[i].authmode));
+        lv_obj_t* entry=lv_label_create(wifi_list);
+        lv_label_set_text(entry,line);
+        lv_obj_set_width(entry,lv_pct(100));
+        lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_pad_bottom(entry,8,0);
+    }
+}
+void on_wifi(lv_event_t*) { navigate("WiFi"); }
+
 char current_section[32] = "Home";
 
 void label(lv_obj_t* parent, const char* text, int font_size_unused = 0) {
@@ -123,6 +182,13 @@ void on_auto_rotate(lv_event_t* e) {
 void navigate(const char* section) {
     strncpy(current_section,section,sizeof(current_section)-1);
     current_section[sizeof(current_section)-1] = 0;
+    if (wifi_timer) {
+        lv_timer_del(wifi_timer);
+        wifi_timer = nullptr;
+        wifi_list = nullptr;
+        wifi_status = nullptr;
+        footholed_wifi_stop();
+    }
     lv_obj_clean(screen);
     lv_obj_set_style_pad_all(screen, 12, 0);
     lv_obj_t* title = lv_label_create(screen);
@@ -148,8 +214,23 @@ void navigate(const char* section) {
         button(content,"ANALYZE",on_nav,(void*)"Analyze");
         button(content,"EXPAND",on_nav,(void*)"Expand");
     } else if (!strcmp(section,"Recon")) {
-        label(content,"Discover and collect / drivers not initialized");
-        for(const char* name : {"Wi-Fi","Bluetooth / BLE","GNSS","NFC / RFID","Infrared","Radio tools"}) button(content,name,on_stub,(void*)name);
+        label(content,"Discover and collect");
+        button(content,"Wi-Fi",on_wifi,nullptr);
+        for(const char* name : {"Bluetooth / BLE","GNSS","NFC / RFID","Infrared","Radio tools"}) button(content,name,on_stub,(void*)name);
+    } else if (!strcmp(section,"WiFi")) {
+        label(content,"Nearby Wi-Fi access points");
+        wifi_status=lv_label_create(content);
+        lv_label_set_text(wifi_status,"Scanning for access points...");
+        wifi_list=lv_obj_create(content);
+        lv_obj_set_width(wifi_list,lv_pct(100));
+        lv_obj_set_flex_grow(wifi_list,1);
+        lv_obj_set_flex_flow(wifi_list,LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_style(wifi_list,&panel_style,LV_PART_MAIN);
+        lv_obj_set_scroll_dir(wifi_list,LV_DIR_VER);
+        wifi_last_generation=UINT32_MAX;
+        footholed_wifi_start();
+        wifi_timer=lv_timer_create(wifi_refresh,500,nullptr);
+        wifi_refresh(nullptr);
     } else if (!strcmp(section,"Analyze")) {
         label(content,"No real observations recorded yet.");
         for(const char* name : {"Observations","Sessions","Compare","Statistics","Saved logs"}) button(content,name,on_stub,(void*)name);

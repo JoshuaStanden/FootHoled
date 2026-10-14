@@ -17,6 +17,7 @@
 #include "board_adapter.h"
 #include "settings.h"
 #include "ui.h"
+#include "wifi_scan.h"
 #include "esp_log.h"
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
@@ -51,6 +52,9 @@ extern "C" void app_main(void) {
     if (!settings_ok) {
         ESP_LOGW(TAG, "Settings service degraded — using defaults");
     }
+
+    // Wi-Fi scanning runs on a separate task; no scanning during boot.
+    if (!footholed_wifi_init()) ESP_LOGE(TAG, "Wi-Fi scanner initialization failed");
 
     // 2. LVGL must be initialized before the board adapter registers display/input.
     lv_init();
