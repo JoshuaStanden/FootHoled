@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "ui.cpp"
+        "splash_logo.cpp"
         "board_adapter.cpp"
         "settings.cpp"
         "mcp23017.cpp"

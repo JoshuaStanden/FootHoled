@@ -145,6 +145,13 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
         out_px = (uint8_t *)s_rotate_buf;
     }
 
+    // Convert LVGL RGB565 byte order for the ST7796 SPI transfer.
+    const uint32_t pixel_count =
+        (out_area.x2 - out_area.x1 + 1) *
+        (out_area.y2 - out_area.y1 + 1);
+
+    lv_draw_sw_rgb565_swap(out_px, pixel_count);
+
     esp_err_t err = esp_lcd_panel_draw_bitmap(
         s_panel_handle,
         out_area.x1, out_area.y1,
@@ -155,7 +162,6 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
                  esp_err_to_name(err));
         lv_display_flush_ready(disp);
     }
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel_handle, true, false));
     // On success colour_trans_done_cb() releases the buffer.
 }
 
@@ -296,6 +302,8 @@ bool footholed_board_init(void)
     }
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel_handle));
+    // Set the verified horizontal mirror once, not on every DMA flush.
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel_handle, true));  // [verified] vendor inverts
     // Display stays off until LVGL is wired; turned on after disp registration.
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel_handle, false));
