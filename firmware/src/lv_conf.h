@@ -87,8 +87,10 @@
    FONTS
  *====================*/
 
-/* Only the default 14px Montserrat is used by ui.cpp. */
+/* 14px Montserrat is the UI default (ui.cpp); 28px is used only by the boot
+ * splash wordmark (splash.cpp). Keep this set minimal to limit font flash use. */
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_28 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 
 /*====================
@@ -101,16 +103,17 @@
 
 /*====================
    WIDGETS
-   Exactly the set ui.cpp instantiates: label, button, switch, slider
-   (slider is built on bar, so bar is enabled too). The generic container
+   The set the app instantiates: label, button, switch, slider (built on bar),
+   plus line + bar used by the boot splash (splash.cpp). The generic container
    lv_obj_create() needs no feature flag.
  *====================*/
 
 #define LV_USE_LABEL    1
 #define LV_USE_BUTTON   1
 #define LV_USE_SWITCH   1
-#define LV_USE_BAR      1   /* required by slider */
+#define LV_USE_BAR      1   /* required by slider; also the boot splash bar */
 #define LV_USE_SLIDER   1
+#define LV_USE_LINE     1   /* boot splash shield outline (splash.cpp) */
 
 /*====================
    OTHERS / EXAMPLES

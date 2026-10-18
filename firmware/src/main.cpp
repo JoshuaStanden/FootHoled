@@ -3,21 +3,27 @@
  * @brief Firmware entry point and LVGL scheduling loop.
  *
  * Startup order:
- *   1. footholed_settings_init() — load NVS settings (or apply defaults)
- *   2. lv_init()                 — LVGL must be ready before board adapter
- *   3. footholed_board_init()    — register ST7796 display + FT6336 touch with LVGL
- *   4. Apply persisted brightness to the backlight
- *   5. footholed_ui_init()       — build the LVGL screen tree
- *   6. footholed_orient_init()   — bring up IMU display auto-rotation (optional)
- *   7. LVGL tick/handler loop (also polls orientation ~4 Hz)
+ *   1.  footholed_settings_init()   -- load NVS settings (or apply defaults)
+ *   1b. footholed_recon_log_init()  -- mount SD card + open the recon CSV log
+ *   1c. footholed_wifi_init()       -- start the Wi-Fi scanner task (idle)
+ *   1d. footholed_ble_init()        -- start the BLE scanner task (idle)
+ *   2.  lv_init()                   -- LVGL must be ready before board adapter
+ *   3.  footholed_board_init()      -- register ST7796 display + FT6336 touch with LVGL
+ *   4.  Apply persisted brightness to the backlight
+ *   5.  footholed_splash_show()     -- boot splash; on fade-out it calls build_app_ui()
+ *   6.  build_app_ui()              -- footholed_ui_init() + IMU auto-rotation
+ *   7.  LVGL tick/handler loop (also polls orientation ~4 Hz)
  *
- * IMPORTANT: footholed_board_init() returns false until the Waveshare 3.5B
- * display/touch BSP is compiled, flashed, and verified on real hardware.
+ * IMPORTANT: footholed_board_init() returns false until the Waveshare 3.5
+ * (non-B) display/touch BSP is compiled, flashed, and verified on real hardware.
  */
 #include "board_adapter.h"
 #include "settings.h"
 #include "ui.h"
+#include "splash.h"
 #include "wifi_scan.h"
+#include "ble_scan.h"
+#include "recon_log.h"
 #include "esp_log.h"
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
@@ -34,10 +40,10 @@ static const char *TAG = "FootHoled/main";
  * are loaded we correct it to the user's stored value.  Only called when the
  * display is confirmed ready so the LEDC channel is guaranteed initialised.
  *
- * @param brightness  Brightness percentage 0–100.
+ * @param brightness  Brightness percentage 0-100.
  */
 static void apply_brightness(uint8_t brightness) {
-    // 10-bit duty: 0–1023.  Match constants from board_adapter.cpp.
+    // 10-bit duty: 0-1023.  Match constants from board_adapter.cpp.
     const uint32_t max_duty = (1u << 10) - 1;  // 1023
     uint32_t duty = ((uint32_t)brightness * max_duty) / 100u;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
@@ -45,16 +51,49 @@ static void apply_brightness(uint8_t brightness) {
     ESP_LOGI(TAG, "Backlight set to %u%% (duty %lu)", brightness, duty);
 }
 
+/**
+ * @brief Build the application UI and bring up auto-rotation.
+ *
+ * Invoked once by the boot splash after it finishes fading out (see
+ * footholed_splash_show). Runs on the LVGL/main thread. Kept separate from
+ * app_main so the splash controls exactly when the real UI appears.
+ */
+static void build_app_ui(void) {
+    // Build the LVGL screen tree on the (now splash-free) active screen.
+    footholed_ui_init();
+
+    // Bring up IMU-driven display auto-rotation (non-fatal if absent).
+    // Gated on the persisted setting so the user can turn it off.
+    if (footholed_settings_get_auto_rotate()) {
+        if (!footholed_orient_init()) {
+            ESP_LOGW(TAG, "Auto-rotation unavailable (IMU not detected)");
+        }
+    } else {
+        ESP_LOGI(TAG, "Auto-rotation disabled in settings");
+    }
+}
+
 extern "C" void app_main(void) {
     // 1. Load settings from NVS (or apply compile-time defaults on first boot).
     //    Must happen before UI init so the UI reads correct initial values.
     const bool settings_ok = footholed_settings_init();
     if (!settings_ok) {
-        ESP_LOGW(TAG, "Settings service degraded — using defaults");
+        ESP_LOGW(TAG, "Settings service degraded -- using defaults");
+    }
+
+    // Mount the SD card and open the persistent recon log before the scanners
+    // start producing sightings. Degrades gracefully (feature off) if no card.
+    if (!footholed_recon_log_init()) {
+        ESP_LOGW(TAG, "Recon SD log unavailable -- sightings will not be persisted");
     }
 
     // Wi-Fi scanning runs on a separate task; no scanning during boot.
     if (!footholed_wifi_init()) ESP_LOGE(TAG, "Wi-Fi scanner initialization failed");
+
+    // BLE scanning also runs on its own task (NimBLE host + worker); idle until
+    // the Bluetooth recon screen calls start(). Shares the 2.4 GHz radio with
+    // Wi-Fi via the controller's coexistence support.
+    if (!footholed_ble_init()) ESP_LOGE(TAG, "BLE scanner initialization failed");
 
     // 2. LVGL must be initialized before the board adapter registers display/input.
     lv_init();
@@ -66,20 +105,12 @@ extern "C" void app_main(void) {
         // 4. Correct backlight to the user's stored brightness (board init set 50 %).
         apply_brightness(footholed_settings_get_brightness());
 
-        // 5. Build the LVGL screen tree.
-        footholed_ui_init();
-
-        // 6. Bring up IMU-driven display auto-rotation (non-fatal if absent).
-        //    Gated on the persisted setting so the user can turn it off.
-        if (footholed_settings_get_auto_rotate()) {
-            if (!footholed_orient_init()) {
-                ESP_LOGW(TAG, "Auto-rotation unavailable (IMU not detected)");
-            }
-        } else {
-            ESP_LOGI(TAG, "Auto-rotation disabled in settings");
-        }
+        // 5. Show the boot splash now, and build the real UI only after it
+        //    finishes (build_app_ui runs from the splash's completion callback).
+        //    The splash is non-blocking; the LVGL loop below drives its timing.
+        footholed_splash_show(1800 /* hold ms */, build_app_ui);
     } else {
-        ESP_LOGW(TAG, "UI unavailable — display/touch adapter not yet verified on hardware.");
+        ESP_LOGW(TAG, "UI unavailable -- display/touch adapter not yet verified on hardware.");
     }
 
     // 7. LVGL tick and timer handler loop.

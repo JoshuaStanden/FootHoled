@@ -1,9 +1,20 @@
 dependencies:
+  # Toolchain floor: this project targets ESP-IDF 6.1.x. The component manager
+  # refuses to resolve on an older IDF, so a fresh checkout cannot silently
+  # build against 5.x. (The known-good build in dependencies.lock ran on 6.1.0.)
+  idf: ">=6.1"
+  # UI framework: LVGL 9.x only. Pinned to the 9.2 line (compatible releases);
+  # do NOT allow a jump to LVGL 10, which changes the API this firmware uses.
   lvgl/lvgl: "~9.2.2"
   # ST7796 SPI display driver required by board_adapter.cpp (non-B 3.5 board).
   # Sourced from the ESP Component Registry (espressif/esp_lcd_st7796).
   espressif/esp_lcd_st7796: ">=1.3.0"
-  # NOTE: the TCA9554 I/O expander (LCD/touch reset path) is driven directly
-  # over I2C in board_adapter.cpp, so no separate component is required. If you
-  # prefer the vendor driver, add espressif/esp_io_expander_tca9554 and wire it
-  # through esp_io_expander_* instead of the inline register writes.
+  # TCA9554 I/O expander — REQUIRED. On the Waveshare 3.5 (non-B) the ST7796
+  # LCD reset and the FT6336 touch reset are NOT wired to ESP32 GPIOs (both are
+  # GPIO_NUM_NC); they are driven from the TCA9554 expander. The vendor factory
+  # firmware (waveshareteam/ESP32-S3-Touch-LCD-3.5, ESP-IDF/01_factory) pulses
+  # expander pin 1 low->high during boot to release the panel/touch from reset
+  # BEFORE esp_lcd_panel_reset/init. Without this the display stays in reset and
+  # comes up blank even though every init call returns ESP_OK. board_adapter.cpp
+  # uses this component via esp_io_expander_new_i2c_tca9554().
+  espressif/esp_io_expander_tca9554: "^2.0.0"

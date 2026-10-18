@@ -13,11 +13,21 @@
  * callback, software rotation, QMI8658 auto-rotation).
  *
  * All pin numbers below are VERIFIED against the vendor port (see values and
- * their source in docs/H0.1_Pin_Map.md). The vendor path uses NO TCA9554 I/O
- * expander for display or touch — CS/RST/TP_RST/TP_INT are all GPIO_NUM_NC — so
- * this adapter does not use one either. (An earlier draft added a speculative
- * TCA9554 reset path; the vendor source shows it is unnecessary, so it was
- * removed to match the proven configuration.)
+ * their source in docs/H0.1_Pin_Map.md). The display controller RST and the
+ * FT6336 touch RST are GPIO_NUM_NC on the SoC because those reset lines are
+ * NOT wired to ESP32 GPIOs on this board — they are driven from a TCA9554 I2C
+ * I/O expander. The vendor factory firmware initialises the expander and pulses
+ * its pin 1 low->high (release reset) during boot, BEFORE esp_lcd_panel_reset/
+ * init. We replicate that here (see footholed_board_init step 1b). Omitting it
+ * leaves the panel/touch held in reset: the display comes up blank even though
+ * every esp_lcd_* call returns ESP_OK.
+ *
+ * DRAW BUFFERS: allocated in PSRAM (MALLOC_CAP_SPIRAM), matching the known-good
+ * justjoshin baseline. The ST7796 is on the SPI master path, which transparently
+ * bounces a PSRAM source buffer when needed; this is the proven-working config.
+ * Do NOT move these to MALLOC_CAP_INTERNAL "to enable DMA" — that reasoning is
+ * from the RGB-parallel-panel driver, not this SPI path, and it has broken the
+ * display before. See firmware/DISPLAY_NOTES.md.
  *
  * IMPORTANT — per AGENTS.md rule #12: this has NOT been compiled, flashed, or
  * tested on hardware. It is a faithful port of the vendor configuration; treat
@@ -37,6 +47,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st7796.h"       // espressif/esp_lcd_st7796 component
+#include "esp_io_expander_tca9554.h"  // espressif/esp_io_expander_tca9554 — LCD/touch reset line
 #include "qmi8658.h"
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
@@ -61,14 +72,14 @@ static const char *TAG = "FootHoled/board";
 #define FH_PIN_LCD_SCLK  GPIO_NUM_5    // [verified] SPI clock
 #define FH_PIN_LCD_CS    GPIO_NUM_NC   // [verified] CS not a dedicated GPIO
 #define FH_PIN_LCD_DC    GPIO_NUM_3    // [verified] data/command select
-#define FH_PIN_LCD_RST   GPIO_NUM_NC   // [verified] no dedicated reset GPIO
+#define FH_PIN_LCD_RST   GPIO_NUM_NC   // [verified] no dedicated reset GPIO (on TCA9554)
 #define FH_PIN_LCD_BL    GPIO_NUM_6    // [verified] backlight (LEDC PWM)
 
 #define FH_PIN_I2C_SDA   GPIO_NUM_8    // [verified] shared I2C0 — header pin 28
 #define FH_PIN_I2C_SCL   GPIO_NUM_7    // [verified] shared I2C0 — header pin 26
 
 #define FH_PIN_TP_INT    GPIO_NUM_NC   // [verified] touch INT not wired (polled)
-#define FH_PIN_TP_RST    GPIO_NUM_NC   // [verified] touch RST not wired
+#define FH_PIN_TP_RST    GPIO_NUM_NC   // [verified] touch RST not wired (on TCA9554)
 
 // ---------------------------------------------------------------------------
 // Display parameters
@@ -81,7 +92,7 @@ static const char *TAG = "FootHoled/board";
 #define FH_LCD_CMD_BITS       8
 #define FH_LCD_PARAM_BITS     8
 
-// LVGL draw-buffer size: 1/10 frame, SPIRAM-backed.
+// LVGL draw-buffer size: 1/10 frame, SPIRAM-backed (known-good baseline).
 #define FH_BUF_LINES          (FH_LCD_V_RES / 10)
 #define FH_BUF_SIZE           (FH_LCD_H_RES * FH_BUF_LINES)
 
@@ -107,6 +118,7 @@ static esp_lcd_panel_io_handle_t  s_io_handle    = nullptr;
 static esp_lcd_panel_handle_t     s_panel_handle = nullptr;
 static i2c_master_bus_handle_t    s_i2c_bus      = nullptr;
 static i2c_master_dev_handle_t    s_touch_dev    = nullptr;
+static esp_io_expander_handle_t   s_io_expander  = nullptr;
 
 static lv_display_t *s_lvgl_disp = nullptr;
 static qmi8658_handle_t s_imu = nullptr;
@@ -162,7 +174,10 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
                  esp_err_to_name(err));
         lv_display_flush_ready(disp);
     }
-    // On success colour_trans_done_cb() releases the buffer.
+    // NOTE: panel mirror is configured ONCE in footholed_board_init(), not here.
+    // Calling esp_lcd_panel_mirror() on every flush is wasteful, and wrapping it
+    // in ESP_ERROR_CHECK on the flush path would reboot the chip on any transient
+    // failure. On success, colour_trans_done_cb() releases the buffer.
 }
 
 static bool colour_trans_done_cb(esp_lcd_panel_io_handle_t io,
@@ -185,8 +200,10 @@ static bool colour_trans_done_cb(esp_lcd_panel_io_handle_t io,
 // NOTE: the vendor ESP-IDF demo uses the dedicated esp_lcd_touch_ft6336
 // component (an I2C panel-IO + esp_lcd_touch handle). This inline register read
 // is a lighter equivalent that avoids pulling that component in. If touch is
-// flaky on hardware, switching to esp_lcd_touch_ft6336 is the robust fallback
-// (it also handles swap/mirror per rotation). TODO(HW): confirm on hardware.
+// flaky or mis-mapped on hardware, switching to esp_lcd_touch_ft6336 is the
+// robust fallback (it also handles swap/mirror per rotation). TODO(HW): the
+// vendor sets swap_xy/mirror_x/mirror_y per rotation; this inline read applies
+// none, so touch coords may need mapping once tested on hardware.
 // ---------------------------------------------------------------------------
 static bool read_touch_raw(uint16_t *x_out, uint16_t *y_out)
 {
@@ -246,8 +263,9 @@ static void backlight_init(void)
 
 // ---------------------------------------------------------------------------
 // footholed_board_init() — the one symbol main.cpp calls.
-// Order mirrors the vendor port: SPI bus -> panel IO -> ST7796 panel ->
-// reset/init/invert/on, then I2C bus + FT6336, then LVGL wiring + backlight.
+// Order mirrors the vendor port: SPI bus -> I2C bus + TCA9554 reset pulse ->
+// panel IO -> ST7796 panel (reset/init/invert/mirror/off) -> touch device ->
+// LVGL wiring (SPIRAM buffers) -> display on -> touch indev -> backlight.
 // ---------------------------------------------------------------------------
 bool footholed_board_init(void)
 {
@@ -267,6 +285,40 @@ bool footholed_board_init(void)
         ESP_LOGE(TAG, "SPI bus init failed");
         return false;
     }
+
+    // ------------------------------------------------------------------
+    // 1b. I2C bus + TCA9554 I/O expander — MUST run before the panel is reset.
+    //
+    // The ST7796 LCD reset and the FT6336 touch reset are not on ESP32 GPIOs
+    // (FH_PIN_LCD_RST / FH_PIN_TP_RST == GPIO_NUM_NC); they hang off the TCA9554
+    // expander. Mirror the vendor factory bring-up exactly: create the shared
+    // I2C bus, then pulse expander pin 1 low (assert reset) -> 100 ms -> high
+    // (release). Only after the panel is out of reset do we init it (step 3).
+    // The IMU/RTC/PMIC/codec/touch all share this same I2C bus later.
+    // ------------------------------------------------------------------
+    i2c_master_bus_config_t i2c_cfg = {};
+    i2c_cfg.i2c_port          = I2C_NUM_0;
+    i2c_cfg.sda_io_num        = FH_PIN_I2C_SDA;
+    i2c_cfg.scl_io_num        = FH_PIN_I2C_SCL;
+    i2c_cfg.clk_source        = I2C_CLK_SRC_DEFAULT;
+    i2c_cfg.glitch_ignore_cnt = 7;
+    i2c_cfg.flags.enable_internal_pullup = true;
+    if (i2c_new_master_bus(&i2c_cfg, &s_i2c_bus) != ESP_OK) {
+        ESP_LOGE(TAG, "I2C bus init failed");
+        return false;
+    }
+
+    // TCA9554 at address 000 (A0..A2 to GND), expander pin 1 = LCD/touch reset.
+    if (esp_io_expander_new_i2c_tca9554(
+            s_i2c_bus, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &s_io_expander) != ESP_OK) {
+        ESP_LOGE(TAG, "TCA9554 I/O expander init failed — display reset line unavailable");
+        return false;
+    }
+    ESP_ERROR_CHECK(esp_io_expander_set_dir(s_io_expander, IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT));
+    ESP_ERROR_CHECK(esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_1, 0)); // assert reset
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_ERROR_CHECK(esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_1, 1)); // release reset
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     // ------------------------------------------------------------------
     // 2. Panel IO (SPI). The transfer-done callback is registered here via
@@ -291,9 +343,11 @@ bool footholed_board_init(void)
     // ------------------------------------------------------------------
     // 3. ST7796 panel driver (stock component default init table).
     //    BGR order + colour inversion ON, exactly as the vendor port does.
+    //    The hardware reset line was already released via the TCA9554 above,
+    //    so esp_lcd_panel_reset() here only issues the ST7796 soft reset.
     // ------------------------------------------------------------------
     esp_lcd_panel_dev_config_t panel_cfg = {};
-    panel_cfg.reset_gpio_num  = FH_PIN_LCD_RST;              // NC — no HW reset line
+    panel_cfg.reset_gpio_num  = FH_PIN_LCD_RST;              // NC — HW reset is on the TCA9554
     panel_cfg.rgb_ele_order   = LCD_RGB_ELEMENT_ORDER_BGR;  // [verified] vendor uses BGR
     panel_cfg.bits_per_pixel  = 16;
     if (esp_lcd_new_panel_st7796(s_io_handle, &panel_cfg, &s_panel_handle) != ESP_OK) {
@@ -302,27 +356,16 @@ bool footholed_board_init(void)
     }
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel_handle));
-    // Set the verified horizontal mirror once, not on every DMA flush.
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel_handle, true));  // [verified] vendor inverts
+    // One-time panel mirror (X mirrored, Y not). Set ONCE here, never on the
+    // flush path (an earlier revision re-applied it on every DMA flush).
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel_handle, true, false));
     // Display stays off until LVGL is wired; turned on after disp registration.
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel_handle, false));
 
     // ------------------------------------------------------------------
-    // 4. I2C bus for touch (also used by IMU, RTC, PMIC, codec)
+    // 4. Add the FT6336 touch device on the shared I2C bus created in step 1b.
     // ------------------------------------------------------------------
-    i2c_master_bus_config_t i2c_cfg = {};
-    i2c_cfg.i2c_port          = I2C_NUM_0;
-    i2c_cfg.sda_io_num        = FH_PIN_I2C_SDA;
-    i2c_cfg.scl_io_num        = FH_PIN_I2C_SCL;
-    i2c_cfg.clk_source        = I2C_CLK_SRC_DEFAULT;
-    i2c_cfg.glitch_ignore_cnt = 7;
-    i2c_cfg.flags.enable_internal_pullup = true;
-    if (i2c_new_master_bus(&i2c_cfg, &s_i2c_bus) != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus init failed");
-        return false;
-    }
-
     i2c_device_config_t touch_cfg = {};
     touch_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     touch_cfg.device_address  = FH_TOUCH_I2C_ADDR;
@@ -351,8 +394,14 @@ bool footholed_board_init(void)
         return false;
     }
 
-    s_lvgl_buf1 = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-    s_lvgl_buf2 = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    // LVGL draw buffers live in PSRAM (MALLOC_CAP_SPIRAM) — the known-good
+    // baseline configuration. The ST7796 SPI master path handles PSRAM source
+    // buffers (internal bounce as needed); this is the proven-working setup.
+    // Keeping them out of internal SRAM also leaves that scarce region for
+    // Wi-Fi + NimBLE + FatFs. Do NOT switch to MALLOC_CAP_INTERNAL — see the
+    // file header and firmware/DISPLAY_NOTES.md.
+    s_lvgl_buf1  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    s_lvgl_buf2  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     s_rotate_buf = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
     if (!s_lvgl_buf1 || !s_lvgl_buf2 || !s_rotate_buf) {
         ESP_LOGE(TAG, "LVGL draw buffer allocation failed (SPIRAM)");
@@ -398,25 +447,24 @@ bool footholed_board_init(void)
 // ===========================================================================
 // Display auto-rotation service (QMI8658 IMU) — unchanged, board-independent
 // ===========================================================================
-// static lv_display_rotation_t orient_to_lv(qmi8658_orientation_t o)
-// {
-//     switch (o) {
-//         case QMI8658_ORIENT_PORTRAIT:         return LV_DISPLAY_ROTATION_0;
-//         case QMI8658_ORIENT_LANDSCAPE_LEFT:   return LV_DISPLAY_ROTATION_90;
-//         case QMI8658_ORIENT_PORTRAIT_FLIPPED: return LV_DISPLAY_ROTATION_180;
-//         case QMI8658_ORIENT_LANDSCAPE_RIGHT:  return LV_DISPLAY_ROTATION_270;
-//         default:                              return LV_DISPLAY_ROTATION_0;
-//     }
-// }
-// above mapping is all fuckered up, testing remap below. 
+// Map a QMI8658 physical orientation to the LVGL display rotation that keeps
+// the UI upright. The panel's native orientation is portrait (ROTATION_0).
+//
+// NOTE: this mapping is behaviourally identical to the author's tested integer
+// remap (0->270, 1->180, 2->90, 3->0), written here with the typed enum names
+// (verified against the ordinals in qmi8658.h: PORTRAIT=0, LANDSCAPE_LEFT=1,
+// PORTRAIT_FLIPPED=2, LANDSCAPE_RIGHT=3):
+//   PORTRAIT (0)         -> 270    LANDSCAPE_LEFT (1)   -> 180
+//   PORTRAIT_FLIPPED (2) ->  90    LANDSCAPE_RIGHT (3)  ->   0
+// TODO(HW): re-confirm against the physical device once auto-rotate is tested.
 static lv_display_rotation_t orient_to_lv(qmi8658_orientation_t o)
 {
-    switch ((int)o) {
-        case 3: return LV_DISPLAY_ROTATION_0;
-        case 2: return LV_DISPLAY_ROTATION_90;
-        case 1: return LV_DISPLAY_ROTATION_180;
-        case 0: return LV_DISPLAY_ROTATION_270;
-        default: return LV_DISPLAY_ROTATION_0;
+    switch (o) {
+        case QMI8658_ORIENT_LANDSCAPE_RIGHT:  return LV_DISPLAY_ROTATION_0;
+        case QMI8658_ORIENT_PORTRAIT_FLIPPED: return LV_DISPLAY_ROTATION_90;
+        case QMI8658_ORIENT_LANDSCAPE_LEFT:   return LV_DISPLAY_ROTATION_180;
+        case QMI8658_ORIENT_PORTRAIT:         return LV_DISPLAY_ROTATION_270;
+        default:                              return LV_DISPLAY_ROTATION_0;
     }
 }
 
@@ -475,4 +523,22 @@ void footholed_orient_poll(void)
                 "Auto-rotate: IMU=%d, LVGL=%d",
                 (int)o, (int)rotation);
     }
+}
+
+
+// ===========================================================================
+// Accessors for other services (e.g. diagnostics) that need the shared bus or
+// the display-ready state owned by this translation unit. Read-only — they do
+// not create or tear down anything.
+// ===========================================================================
+i2c_master_bus_handle_t footholed_board_i2c_bus(void)
+{
+    return s_i2c_bus;
+}
+
+bool footholed_board_display_ready(void)
+{
+    // s_lvgl_disp is set only after the display + input devices are registered
+    // with LVGL in footholed_board_init(), so it is the authoritative flag.
+    return s_lvgl_disp != nullptr;
 }

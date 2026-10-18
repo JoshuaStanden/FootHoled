@@ -3,9 +3,21 @@
  * @brief Interface between generic LVGL application code and board drivers.
  */
 #pragma once
+#include "driver/i2c_master.h"
 // Integrate Waveshare ESP32-S3-Touch-LCD-3.5B display and touch drivers here.
 // Return true ONLY after LVGL display and input devices are registered.
 bool footholed_board_init();
+
+// ---------------------------------------------------------------------------
+// Accessors for services that need board-owned resources (diagnostics, etc.)
+// ---------------------------------------------------------------------------
+// The shared I2C0 master bus handle (touch, IMU, RTC, PMIC, power monitor,
+// audio codec all live here). Returns nullptr before footholed_board_init().
+i2c_master_bus_handle_t footholed_board_i2c_bus(void);
+
+// True once the display + input devices are registered with LVGL (i.e. after
+// footholed_board_init() has succeeded). Used by the diagnostics self-test.
+bool footholed_board_display_ready(void);
 
 // ---------------------------------------------------------------------------
 // Display auto-rotation (QMI8658 IMU)

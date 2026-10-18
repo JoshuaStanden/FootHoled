@@ -13,6 +13,9 @@
 #include "splash_logo.h"
 #include "settings.h"
 #include "wifi_scan.h"
+#include "ble_scan.h"
+#include "diagnostics.h"
+#include "sd_format.h"
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +80,11 @@ lv_obj_t* wifi_status = nullptr;
 lv_timer_t* wifi_timer = nullptr;
 uint32_t wifi_last_generation = UINT32_MAX;
 
+lv_obj_t* ble_list = nullptr;
+lv_obj_t* ble_status = nullptr;
+lv_timer_t* ble_timer = nullptr;
+uint32_t ble_last_generation = UINT32_MAX;
+
 void mask_identifier(char *s) {
     if (!footholed_settings_get_privacy_on()) return;
     size_t len = strlen(s);
@@ -129,6 +137,147 @@ void wifi_refresh(lv_timer_t*) {
     }
 }
 void on_wifi(lv_event_t*) { navigate("WiFi"); }
+
+const char* ble_addr_kind(uint8_t t) {
+    // NimBLE own/peer address types: 0 public, 1 random, 2/3 resolvable (RPA).
+    switch (t) {
+        case 0: return "public";
+        case 1: return "random";
+        case 2: return "rpa-pub";
+        case 3: return "rpa-rnd";
+        default: return "addr";
+    }
+}
+void ble_refresh(lv_timer_t*) {
+    if (!ble_list || !ble_status) return;
+    FootHoledBLEDevice devs[48];
+    uint32_t gen=0;
+    bool running=false, error=false;
+    size_t n=footholed_ble_snapshot(devs,48,&gen,&running,&error);
+    if (gen == ble_last_generation && !error) return;
+    ble_last_generation=gen;
+    if (error) lv_label_set_text(ble_status,"BLE scan failed; retrying...");
+    else if (!n) lv_label_set_text(ble_status,"Scanning for BLE devices...");
+    else lv_label_set_text_fmt(ble_status,"%u devices found / refreshing",(unsigned)n);
+    lv_obj_clean(ble_list);
+    for (size_t i=0;i<n;++i) {
+        char name[33];
+        strncpy(name, devs[i].name, sizeof(name)); name[32]=0;
+        if (!name[0]) strcpy(name,"<no name>");
+        char mac[18];
+        snprintf(mac,sizeof(mac),"%02X:%02X:%02X:%02X:%02X:%02X",
+                 devs[i].addr[0],devs[i].addr[1],devs[i].addr[2],
+                 devs[i].addr[3],devs[i].addr[4],devs[i].addr[5]);
+        mask_identifier(name); mask_identifier(mac);
+        char line[180];
+        snprintf(line,sizeof(line),"%s\n%s  |  %d dBm  |  %s",
+                 name,mac,(int)devs[i].rssi,ble_addr_kind(devs[i].addr_type));
+        lv_obj_t* entry=lv_label_create(ble_list);
+        lv_label_set_text(entry,line);
+        lv_obj_set_width(entry,lv_pct(100));
+        lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_pad_bottom(entry,8,0);
+    }
+}
+void on_bluetooth(lv_event_t*) { navigate("Bluetooth"); }
+
+// --------------------------------------------------------------------------
+// Destructive SD-card format flow.
+//
+// Two-stage confirmation gate before anything irreversible happens:
+//   Storage screen "Format SD Card" (red)  ->  warning msgbox #1
+//     "No"  -> close, return to Settings (nothing happens)
+//     "Yes" -> warning msgbox #2 ("are you sure you're sure?")
+//        "No"  -> close, return to Settings (nothing happens)
+//        "Yes" -> footholed_sd_format() runs; result shown on a report screen.
+//
+// The safe choice is emphasised: the destructive "Yes" is red, the "No"/Cancel
+// is the plain default. Both messages state the wipe is destructive & permanent.
+// --------------------------------------------------------------------------
+constexpr uint32_t DANGER     = 0xDC2626; // red for destructive affordances
+constexpr uint32_t DANGER_TXT = 0xFCA5A5; // light red for warning text
+
+void show_format_confirm_1(lv_event_t*);  // fwd decls
+void run_sd_format(lv_event_t*);
+
+// Style the "Yes, format" button of a msgbox red so it reads as destructive.
+static void make_danger(lv_obj_t* btn) {
+    if (!btn) return;
+    lv_obj_set_style_bg_color(btn, lv_color_hex(DANGER), LV_PART_MAIN);
+    lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+}
+
+// Both "No" paths just dismiss the dialog; the Storage screen is still behind
+// it, and the Settings button in the header returns to Settings. We also
+// re-navigate to Settings explicitly so "No" lands exactly where asked.
+void on_format_cancel(lv_event_t* e) {
+    lv_obj_t* mbox = (lv_obj_t*)lv_event_get_user_data(e);
+    if (mbox) lv_msgbox_close(mbox);
+    navigate("Settings");
+}
+
+// Stage 2 dialog: the final "are you sure you're sure?" gate.
+void show_format_confirm_2(lv_event_t* e) {
+    lv_obj_t* prev = (lv_obj_t*)lv_event_get_user_data(e);
+    if (prev) lv_msgbox_close(prev);
+
+    lv_obj_t* mbox = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(mbox, "Are you sure you're sure?");
+    lv_msgbox_add_text(mbox,
+        "FINAL CONFIRMATION. This permanently ERASES everything on the SD "
+        "card. This cannot be undone. Format the card now?");
+    lv_obj_set_style_text_color(mbox, lv_color_hex(DANGER_TXT), LV_PART_MAIN);
+
+    lv_obj_t* yes = lv_msgbox_add_footer_button(mbox, "Yes, format now");
+    make_danger(yes);
+    lv_obj_add_event_cb(yes, run_sd_format, LV_EVENT_CLICKED, mbox);
+
+    lv_obj_t* no = lv_msgbox_add_footer_button(mbox, "No, cancel");
+    lv_obj_add_event_cb(no, on_format_cancel, LV_EVENT_CLICKED, mbox);
+}
+
+// Stage 1 dialog: the "last warning" gate.
+void show_format_confirm_1(lv_event_t*) {
+    lv_obj_t* mbox = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(mbox, "Last warning");
+    lv_msgbox_add_text(mbox,
+        "Are you sure? This is your LAST WARNING. You are about to "
+        "DESTRUCTIVELY format the card -- every file will be permanently "
+        "erased and cannot be recovered.");
+    lv_obj_set_style_text_color(mbox, lv_color_hex(DANGER_TXT), LV_PART_MAIN);
+
+    lv_obj_t* yes = lv_msgbox_add_footer_button(mbox, "Yes, continue");
+    make_danger(yes);
+    lv_obj_add_event_cb(yes, show_format_confirm_2, LV_EVENT_CLICKED, mbox);
+
+    lv_obj_t* no = lv_msgbox_add_footer_button(mbox, "No, go back");
+    lv_obj_add_event_cb(no, on_format_cancel, LV_EVENT_CLICKED, mbox);
+}
+
+// Executed only after BOTH confirmations. Runs the format and shows the result.
+void run_sd_format(lv_event_t* e) {
+    lv_obj_t* prev = (lv_obj_t*)lv_event_get_user_data(e);
+    if (prev) lv_msgbox_close(prev);
+
+    fh_sd_format_result_t r = footholed_sd_format();
+
+    // Report the outcome on a modal so the user sees success / no-card / fail.
+    lv_obj_t* mbox = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(mbox,
+        r == FH_SD_FORMAT_OK ? "Done" :
+        r == FH_SD_FORMAT_NO_CARD ? "No card" : "Format failed");
+    lv_msgbox_add_text(mbox, footholed_sd_format_result_text(r));
+    lv_obj_set_style_text_color(mbox,
+        lv_color_hex(r == FH_SD_FORMAT_OK ? 0x4ADE80 : 0xFBBF24), LV_PART_MAIN);
+    lv_obj_t* ok = lv_msgbox_add_footer_button(mbox, "OK");
+    lv_obj_add_event_cb(ok, on_format_cancel, LV_EVENT_CLICKED, mbox);
+}
+
+void on_storage(lv_event_t*) { navigate("Storage"); }
+
+void on_diagnostics(lv_event_t*) { navigate("Diagnostics"); }
+// Re-run just re-navigates to the same section, which re-runs the pass.
+void on_diag_rerun(lv_event_t*) { navigate("Diagnostics"); }
 
 char current_section[32] = "Home";
 
@@ -189,6 +338,13 @@ void navigate(const char* section) {
         wifi_status = nullptr;
         footholed_wifi_stop();
     }
+    if (ble_timer) {
+        lv_timer_del(ble_timer);
+        ble_timer = nullptr;
+        ble_list = nullptr;
+        ble_status = nullptr;
+        footholed_ble_stop();
+    }
     lv_obj_clean(screen);
     lv_obj_set_style_pad_all(screen, 12, 0);
     lv_obj_t* title = lv_label_create(screen);
@@ -216,7 +372,8 @@ void navigate(const char* section) {
     } else if (!strcmp(section,"Recon")) {
         label(content,"Discover and collect");
         button(content,"Wi-Fi",on_wifi,nullptr);
-        for(const char* name : {"Bluetooth / BLE","GNSS","NFC / RFID","Infrared","Radio tools"}) button(content,name,on_stub,(void*)name);
+        button(content,"Bluetooth / BLE",on_bluetooth,nullptr);
+        for(const char* name : {"GNSS","NFC / RFID","Infrared","Radio tools"}) button(content,name,on_stub,(void*)name);
     } else if (!strcmp(section,"WiFi")) {
         label(content,"Nearby Wi-Fi access points");
         wifi_status=lv_label_create(content);
@@ -231,12 +388,66 @@ void navigate(const char* section) {
         footholed_wifi_start();
         wifi_timer=lv_timer_create(wifi_refresh,500,nullptr);
         wifi_refresh(nullptr);
+    } else if (!strcmp(section,"Bluetooth")) {
+        label(content,"Nearby Bluetooth LE devices");
+        ble_status=lv_label_create(content);
+        lv_label_set_text(ble_status,"Scanning for BLE devices...");
+        ble_list=lv_obj_create(content);
+        lv_obj_set_width(ble_list,lv_pct(100));
+        lv_obj_set_flex_grow(ble_list,1);
+        lv_obj_set_flex_flow(ble_list,LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_style(ble_list,&panel_style,LV_PART_MAIN);
+        lv_obj_set_scroll_dir(ble_list,LV_DIR_VER);
+        ble_last_generation=UINT32_MAX;
+        footholed_ble_start();
+        ble_timer=lv_timer_create(ble_refresh,500,nullptr);
+        ble_refresh(nullptr);
     } else if (!strcmp(section,"Analyze")) {
         label(content,"No real observations recorded yet.");
         for(const char* name : {"Observations","Sessions","Compare","Statistics","Saved logs"}) button(content,name,on_stub,(void*)name);
     } else if (!strcmp(section,"Expand")) {
         label(content,"Module registry: discovery not connected.");
-        for(const char* name : {"Discover modules","Uninitialized","Installed modules","Manual setup","Diagnostics"}) button(content,name,on_stub,(void*)name);
+        for(const char* name : {"Discover modules","Uninitialized","Installed modules","Manual setup"}) button(content,name,on_stub,(void*)name);
+        button(content,"Diagnostics",on_diagnostics,nullptr);
+    } else if (!strcmp(section,"Diagnostics")) {
+        label(content,"Hardware self-test");
+        // Run the sanity pass now and render each result as a colour-coded row.
+        static fh_diag_result_t results[FH_DIAG_MAX_RESULTS];
+        size_t ok=0, fail=0;
+        size_t count=footholed_diagnostics_run(results,FH_DIAG_MAX_RESULTS,&ok,&fail);
+        lv_obj_t* summary=lv_label_create(content);
+        lv_label_set_text_fmt(summary,"%u checks  |  %u OK  |  %u FAIL",
+                              (unsigned)count,(unsigned)ok,(unsigned)fail);
+        lv_obj_set_style_text_color(summary,
+            lv_color_hex(fail ? 0xF87171 : 0x4ADE80), 0);
+        lv_obj_t* list=lv_obj_create(content);
+        lv_obj_set_width(list,lv_pct(100));
+        lv_obj_set_flex_grow(list,1);
+        lv_obj_set_flex_flow(list,LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_style(list,&panel_style,LV_PART_MAIN);
+        lv_obj_set_scroll_dir(list,LV_DIR_VER);
+        for (size_t i=0;i<count;++i) {
+            // Colour per status: OK green, FAIL red, NOT PRESENT amber, SKIPPED grey.
+            uint32_t col;
+            switch (results[i].status) {
+                case FH_DIAG_OK:          col=0x4ADE80; break;
+                case FH_DIAG_FAIL:        col=0xF87171; break;
+                case FH_DIAG_NOT_PRESENT: col=0xFBBF24; break;
+                default:                  col=0x9CA3AF; break;
+            }
+            char line[96];
+            snprintf(line,sizeof(line),"%-16s %s  %s",
+                     results[i].name,
+                     footholed_diagnostics_status_text(results[i].status),
+                     results[i].detail);
+            lv_obj_t* entry=lv_label_create(list);
+            lv_label_set_text(entry,line);
+            lv_obj_set_width(entry,lv_pct(100));
+            lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_color(entry,lv_color_hex(col),0);
+            lv_obj_set_style_pad_bottom(entry,6,0);
+        }
+        button(content,"Re-run",on_diag_rerun,nullptr);
     } else if (!strcmp(section,"Settings")) {
         label(content,"Settings (NVS-persisted)");
         label(content,"Privacy masking enabled");
@@ -265,7 +476,33 @@ void navigate(const char* section) {
         lv_obj_t* preview=lv_label_create(content);
         lv_label_set_text(preview,"Preview: ****-demo-SSID");
         lv_obj_add_event_cb(slider,on_mask,LV_EVENT_VALUE_CHANGED,preview);
-        for(const char* name : {"Display","Storage","Device","Developer","About"}) button(content,name,on_stub,(void*)name);
+        button(content,"Storage",on_storage,nullptr);
+        for(const char* name : {"Display","Device","Developer","About"}) button(content,name,on_stub,(void*)name);
+    } else if (!strcmp(section,"Storage")) {
+        label(content,"Storage");
+        // Prominent, repeated warning that formatting is destructive & permanent.
+        lv_obj_t* w1=lv_label_create(content);
+        lv_label_set_text(w1,
+            "WARNING: formatting the SD card is DESTRUCTIVE and PERMANENT.");
+        lv_obj_set_width(w1,lv_pct(100));
+        lv_label_set_long_mode(w1,LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(w1,lv_color_hex(DANGER_TXT),0);
+        lv_obj_t* w2=lv_label_create(content);
+        lv_label_set_text(w2,
+            "Every file on the card will be erased and cannot be recovered. "
+            "The recon log is wiped and recreated empty. You will be asked to "
+            "confirm twice.");
+        lv_obj_set_width(w2,lv_pct(100));
+        lv_label_set_long_mode(w2,LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(w2,lv_color_hex(DANGER_TXT),0);
+        // Red destructive button -> opens the two-stage confirmation gate.
+        lv_obj_t* fmt=themed_button(content);
+        lv_obj_set_width(fmt,lv_pct(100));
+        lv_obj_set_style_bg_color(fmt,lv_color_hex(DANGER),LV_PART_MAIN);
+        lv_obj_set_style_text_color(fmt,lv_color_hex(0xFFFFFF),LV_PART_MAIN);
+        lv_obj_add_event_cb(fmt,show_format_confirm_1,LV_EVENT_CLICKED,nullptr);
+        lv_obj_t* fl=lv_label_create(fmt);
+        lv_label_set_text(fl,"Format SD Card"); lv_obj_center(fl);
     }
 }
 }

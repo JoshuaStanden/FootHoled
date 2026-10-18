@@ -18,3 +18,22 @@ CONFIG_I2C_ENABLE_DEBUG_LOG=n
 
 # SPI: allow large DMA transfers for the 320x480 frame buffer
 CONFIG_SPI_MASTER_IN_IRAM=y
+
+# Bluetooth: enable the controller + NimBLE host for BLE recon (ble_scan.cpp).
+# TODO(HW): confirm on the real board ΓÇö the ESP32-S3 is BLE-only (no Classic BT),
+# so NimBLE in central/observer mode is the correct, lightest choice here.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# We only observe (scan); no peripheral/advertising roles needed.
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+
+# SD card recon log (recon_log.cpp): FatFs over the onboard SDMMC slot.
+# The card MUST be formatted FAT32 (FatFs supports FAT32/exFAT only; ext2/3/4
+# are NOT supported). Long filenames stored on the heap keep IRAM pressure low.
+# TODO(HW): to support 64 GB+ cards formatted exFAT, also set
+#   CONFIG_FATFS_LONG_FILENAMES and the exFAT option (CONFIG_FATFS_API_ENCODING).
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

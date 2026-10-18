@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "recon_log.h"
 #include <string.h>
 
 namespace {
@@ -61,6 +62,12 @@ void scan_task(void *) {
             }
         }
         xSemaphoreGive(guard);
+        // Persist every sighting from this completed scan to the SD-card log.
+        // No-ops safely if no card is mounted. Done after releasing the guard
+        // so SD I/O never blocks a UI snapshot read.
+        if (err == ESP_OK && count > 0) {
+            footholed_recon_log_wifi(aps, count);
+        }
         heap_caps_free(records);
         vTaskDelay(pdMS_TO_TICKS(2500));
     }
