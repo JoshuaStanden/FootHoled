@@ -253,7 +253,9 @@ static void backlight_init(void)
     ch.speed_mode = FH_BL_LEDC_MODE;
     ch.channel    = FH_BL_LEDC_CHANNEL;
     ch.timer_sel  = FH_BL_LEDC_TIMER;
-    ch.intr_type  = LEDC_INTR_DISABLE;
+    // Note: ledc_channel_config_t::intr_type is deprecated in ESP-IDF 6.1
+    // (the driver handles the interrupt internally); ch is zero-initialised,
+    // so omitting it is equivalent to the old LEDC_INTR_DISABLE.
     ch.gpio_num   = FH_PIN_LCD_BL;
     ch.duty       = FH_BL_DUTY_MAX / 2;   // 50 % — corrected to stored value in main.cpp
     ch.hpoint     = 0;
