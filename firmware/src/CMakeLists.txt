@@ -36,6 +36,7 @@ idf_component_register(
         esp_driver_sdmmc
         spi_flash
         esp_psram
+        esp_app_format
         lvgl
         espressif__esp_lcd_st7796
         espressif__esp_io_expander_tca9554
