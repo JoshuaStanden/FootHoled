@@ -19,6 +19,11 @@ i2c_master_bus_handle_t footholed_board_i2c_bus(void);
 // footholed_board_init() has succeeded). Used by the diagnostics self-test.
 bool footholed_board_display_ready(void);
 
+// Set the LCD backlight brightness, 0-100 %. Drives the LEDC PWM directly, so
+// it takes effect immediately (used by the Display settings slider and by the
+// boot brightness restore). Safe to call after footholed_board_init().
+void footholed_board_set_backlight(uint8_t percent);
+
 // ---------------------------------------------------------------------------
 // Display auto-rotation (QMI8658 IMU)
 // ---------------------------------------------------------------------------

@@ -12,11 +12,13 @@
 #include "ui.h"
 #include "splash_logo.h"
 #include "settings.h"
+#include "board_adapter.h"   // footholed_board_set_backlight (Display slider)
 #include "wifi_scan.h"
 #include "ble_scan.h"
 #include "diagnostics.h"
 #include "sd_format.h"
 #include "recon_log.h"   // async SD-format start/poll API
+#include "esp_app_desc.h" // firmware version/build info for the About screen
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
@@ -406,6 +408,18 @@ void on_auto_rotate(lv_event_t* e) {
     bool on = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
     footholed_settings_set_auto_rotate(on);
 }
+// Display brightness slider: apply live to the backlight AND persist to NVS.
+void on_brightness(lv_event_t* e) {
+    int pct = (int)lv_slider_get_value((lv_obj_t*)lv_event_get_target(e));
+    footholed_board_set_backlight((uint8_t)pct);     // live
+    footholed_settings_set_brightness((uint8_t)pct); // persist
+    lv_obj_t* preview = (lv_obj_t*)lv_event_get_user_data(e);
+    if (preview) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Brightness: %d%%", pct);
+        lv_label_set_text(preview, buf);
+    }
+}
 // Rebuild the simple alpha screen tree when navigating. A later iteration can
 // introduce reusable views and a back-stack without coupling to drivers.
 void navigate(const char* section) {
@@ -557,7 +571,9 @@ void navigate(const char* section) {
         lv_label_set_text(preview,"Preview: ****-demo-SSID");
         lv_obj_add_event_cb(slider,on_mask,LV_EVENT_VALUE_CHANGED,preview);
         button(content,"Storage",on_storage,nullptr);
-        for(const char* name : {"Display","Device","Developer","About"}) button(content,name,on_stub,(void*)name);
+        button(content,"Display",on_nav,(void*)"Display");
+        for(const char* name : {"Device","Developer"}) button(content,name,on_stub,(void*)name);
+        button(content,"About",on_nav,(void*)"About");
     } else if (!strcmp(section,"Storage")) {
         label(content,"Storage");
         // Detected card status + true capacity (read from the card CSD, so it
@@ -615,6 +631,38 @@ void navigate(const char* section) {
         lv_obj_add_event_cb(fmt,show_format_confirm_1,LV_EVENT_CLICKED,nullptr);
         lv_obj_t* fl=lv_label_create(fmt);
         lv_label_set_text(fl,"Format SD Card"); lv_obj_center(fl);
+    } else if (!strcmp(section,"Display")) {
+        label(content,"Display");
+        label(content,"Backlight brightness (0-100%)");
+        lv_obj_t* preview=lv_label_create(content);
+        {
+            char buf[32];
+            snprintf(buf,sizeof(buf),"Brightness: %u%%",
+                     footholed_settings_get_brightness());
+            lv_label_set_text(preview,buf);
+        }
+        lv_obj_t* slider=lv_slider_create(content);
+        lv_obj_set_width(slider,lv_pct(90));
+        lv_obj_set_style_bg_color(slider,lv_color_hex(PURPLE),LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(slider,lv_color_hex(0xA78BFA),LV_PART_KNOB);
+        lv_obj_set_style_bg_color(slider,lv_color_hex(BUTTON),LV_PART_MAIN);
+        lv_slider_set_range(slider,0,100);
+        lv_slider_set_value(slider,footholed_settings_get_brightness(),LV_ANIM_OFF);
+        lv_obj_add_event_cb(slider,on_brightness,LV_EVENT_VALUE_CHANGED,preview);
+    } else if (!strcmp(section,"About")) {
+        label(content,"About");
+        const esp_app_desc_t* app = esp_app_get_description();
+        char line[96];
+        snprintf(line,sizeof(line),"FootHoled H1");            label(content,line);
+        snprintf(line,sizeof(line),"Firmware: %s", app ? app->version : "?");
+        label(content,line);
+        snprintf(line,sizeof(line),"Built: %s %s",
+                 app ? app->date : "?", app ? app->time : "");
+        label(content,line);
+        snprintf(line,sizeof(line),"IDF: %s", app ? app->idf_ver : "?");
+        label(content,line);
+        label(content,"Board: Waveshare ESP32-S3-Touch-LCD-3.5 (non-B)");
+        label(content,"ST7796 SPI display + FT6336 touch, ESP32-S3R8");
     }
 }
 }

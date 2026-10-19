@@ -43,12 +43,10 @@ static const char *TAG = "FootHoled/main";
  * @param brightness  Brightness percentage 0-100.
  */
 static void apply_brightness(uint8_t brightness) {
-    // 10-bit duty: 0-1023.  Match constants from board_adapter.cpp.
-    const uint32_t max_duty = (1u << 10) - 1;  // 1023
-    uint32_t duty = ((uint32_t)brightness * max_duty) / 100u;
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    ESP_LOGI(TAG, "Backlight set to %u%% (duty %lu)", brightness, duty);
+    // Delegate to the board's public backlight setter (single source of the
+    // LEDC duty math; see board_adapter.cpp).
+    footholed_board_set_backlight(brightness);
+    ESP_LOGI(TAG, "Backlight set to %u%%", brightness);
 }
 
 /**

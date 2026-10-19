@@ -268,6 +268,16 @@ static void backlight_init(void)
     ESP_LOGI(TAG, "Backlight on at 50%% (GPIO%d PWM)", FH_PIN_LCD_BL);
 }
 
+// Public: set backlight brightness 0-100 %. Used by main.cpp's boot restore
+// and the Display settings slider (live). Clamps and drives the LEDC duty.
+void footholed_board_set_backlight(uint8_t percent)
+{
+    if (percent > 100) percent = 100;
+    uint32_t duty = ((uint32_t)percent * FH_BL_DUTY_MAX) / 100u;
+    ledc_set_duty(FH_BL_LEDC_MODE, FH_BL_LEDC_CHANNEL, duty);
+    ledc_update_duty(FH_BL_LEDC_MODE, FH_BL_LEDC_CHANNEL);
+}
+
 // ---------------------------------------------------------------------------
 // footholed_board_init() — the one symbol main.cpp calls.
 // Order mirrors the vendor port: SPI bus -> I2C bus + TCA9554 reset pulse ->
