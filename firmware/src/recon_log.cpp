@@ -61,7 +61,14 @@ std::atomic<uint64_t> s_card_bytes{0};   // capacity from CSD, valid if present
 // so the two paths can never drift. Defined once here.
 static void sd_make_host_slot(sdmmc_host_t *host, sdmmc_slot_config_t *slot) {
     *host = SDMMC_HOST_DEFAULT();
-    host->max_freq_khz = SDMMC_FREQ_PROBING;   // conservative init clock
+    // Run at the normal 20 MHz default. An earlier revision pinned this to
+    // SDMMC_FREQ_PROBING (400 kHz) as a belt-and-suspenders for first-contact
+    // on this board's marginal SD lines — but that 400 kHz cap applied to ALL
+    // I/O, making an 8 GB format take MANY MINUTES. Reliability on this board
+    // comes from the internal pull-ups (below); the init handshake always
+    // starts slow internally and negotiates up, so DEFAULT is safe here and
+    // makes format + logging run at full speed.
+    host->max_freq_khz = SDMMC_FREQ_DEFAULT;   // 20 MHz (was 400 kHz probe)
     *slot = SDMMC_SLOT_CONFIG_DEFAULT();
     slot->width = 1;                            // 1-bit: CLK/CMD/D0 only
     slot->clk = (gpio_num_t)FH_PIN_SD_CLK;
