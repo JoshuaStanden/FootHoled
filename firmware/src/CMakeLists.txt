@@ -13,10 +13,11 @@ idf_component_register(
         "recon_log.cpp"
         "sd_format.cpp"
         "diagnostics.cpp"
-        # NOTE: splash_logo.cpp defines a static RGB565 logo image
-        # (footholed_splash_logo) that is not yet referenced by the animated
-        # splash in splash.cpp. It is intentionally left out of the build until
-        # the splash is wired to draw it; add it back here when that happens.
+        # splash_logo.cpp defines the static RGB565 logo image
+        # (footholed_splash_logo). ui.cpp's boot splash draws it via
+        # lv_image_set_src(), so this MUST be compiled in or the link fails
+        # with "undefined reference to footholed_splash_logo".
+        "splash_logo.cpp"
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_ledc

@@ -59,6 +59,9 @@ CONFIG_LV_USE_SWITCH=y
 CONFIG_LV_USE_BAR=y
 CONFIG_LV_USE_SLIDER=y
 CONFIG_LV_USE_LINE=y
+# Image widget: ui.cpp's boot splash draws the RGB565 logo (splash_logo.cpp)
+# via lv_image_create()/lv_image_set_src().
+CONFIG_LV_USE_IMAGE=y
 # Use newlib (CLIB) for malloc/string/sprintf, matching the old lv_conf.h.
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_STRING=y
