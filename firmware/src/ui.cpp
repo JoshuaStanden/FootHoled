@@ -651,9 +651,9 @@ void navigate(const char* section) {
         lv_obj_add_event_cb(slider,on_brightness,LV_EVENT_VALUE_CHANGED,preview);
     } else if (!strcmp(section,"About")) {
         label(content,"About");
+        label(content,"FootHoled H1");
         const esp_app_desc_t* app = esp_app_get_description();
         char line[96];
-        snprintf(line,sizeof(line),"FootHoled H1");            label(content,line);
         snprintf(line,sizeof(line),"Firmware: %s", app ? app->version : "?");
         label(content,line);
         snprintf(line,sizeof(line),"Built: %s %s",
