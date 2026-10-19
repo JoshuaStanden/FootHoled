@@ -9,6 +9,8 @@
 #include "axp2101.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "freertos/FreeRTOS.h"   // pdMS_TO_TICKS
+#include "freertos/task.h"
 #include <stdlib.h>
 
 namespace {
