@@ -33,6 +33,18 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, uint8_t addr,
 {
     ESP_RETURN_ON_FALSE(bus && handle, ESP_ERR_INVALID_ARG, TAG, "null arg");
 
+    // Presence check via a bus-level address probe — this is exactly what the
+    // diagnostics I2C scan uses to detect 0x34, and it works. (An earlier
+    // version instead did a register READ for presence; that false-negatived
+    // as "no ACK" even though the PMU is on the bus, because the chosen ID
+    // register read was unreliable. Probe first, then trust it.)
+    esp_err_t pret = i2c_master_probe(bus, addr, 50);
+    if (pret != ESP_OK) {
+        ESP_LOGD(TAG, "AXP2101 not present at 0x%02X (probe %s)", addr,
+                 esp_err_to_name(pret));
+        return ESP_ERR_NOT_FOUND;
+    }
+
     axp2101_handle_t h = (axp2101_handle_t)calloc(1, sizeof(struct axp2101_dev_s));
     ESP_RETURN_ON_FALSE(h, ESP_ERR_NO_MEM, TAG, "alloc failed");
     h->addr = addr;
@@ -51,19 +63,14 @@ esp_err_t axp2101_init(i2c_master_bus_handle_t bus, uint8_t addr,
         return ret;
     }
 
-    // Presence check: a readable chip-ID register means the PMU ACKs. We don't
-    // hard-match a specific ID value (vendor silicon revisions vary); any
-    // successful read at 0x34 confirms the AXP2101 is on the bus.
+    // Read IC_TYPE for logging only — do NOT fail on it; presence is already
+    // confirmed by the probe above.
     uint8_t id = 0;
-    ret = reg_read8(h, AXP2101_REG_CHIP_ID, &id);
-    if (ret != ESP_OK) {
-        ESP_LOGD(TAG, "AXP2101 not present at 0x%02X (%s)", addr, esp_err_to_name(ret));
-        i2c_master_bus_rm_device(h->i2c_dev);
-        free(h);
-        return ESP_ERR_NOT_FOUND;
+    if (reg_read8(h, AXP2101_REG_CHIP_ID, &id) == ESP_OK) {
+        ESP_LOGI(TAG, "AXP2101 present at 0x%02X (IC_TYPE 0x%02X)", addr, id);
+    } else {
+        ESP_LOGI(TAG, "AXP2101 present at 0x%02X (IC_TYPE read skipped)", addr);
     }
-
-    ESP_LOGI(TAG, "AXP2101 present at 0x%02X (chip id 0x%02X)", addr, id);
     *handle = h;
     return ESP_OK;
 }

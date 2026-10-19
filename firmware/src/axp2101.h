@@ -33,7 +33,7 @@ extern "C" {
 // Registers (X-Powers AXP2101 datasheet V1.0).
 #define AXP2101_REG_STATUS1       0x00  ///< VBUS/battery present + power state
 #define AXP2101_REG_STATUS2       0x01  ///< Charge status in bits[2:0]
-#define AXP2101_REG_CHIP_ID       0x03  ///< Chip ID (used for presence check)
+#define AXP2101_REG_CHIP_ID       0x03  ///< IC_TYPE (read for logging; presence is probed)
 #define AXP2101_REG_BATT_PERCENT  0xA4  ///< Fuel-gauge battery level, 0..100 (%)
 
 // Charge state decoded from STATUS2 bits[2:0].
