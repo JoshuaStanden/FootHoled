@@ -21,8 +21,10 @@
 #include "driver/sdmmc_host.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
+#include <atomic>
 
 namespace {
 const char *TAG = "FootHoled/log";
@@ -49,6 +51,16 @@ constexpr int FH_PIN_SD_D0  = 9;
 sdmmc_card_t *s_card = nullptr;
 bool s_available = false;
 SemaphoreHandle_t s_guard = nullptr;
+
+// ---------------------------------------------------------------------------
+// Async format state. The format erases the whole card and can take many
+// seconds; running it on the LVGL/UI thread freezes the display. Instead a
+// dedicated task does the blocking work and publishes a phase + percent that
+// the UI polls (lock-free, single writer = the format task, readers = UI).
+// ---------------------------------------------------------------------------
+std::atomic<int> s_fmt_phase{0};   // fh_recon_fmt_phase_t
+std::atomic<int> s_fmt_pct{0};     // 0..100 (coarse, phase-driven)
+TaskHandle_t     s_fmt_task = nullptr;
 
 // Format a 6-byte address MSB-first as AA:BB:CC:DD:EE:FF.
 void format_mac(const uint8_t *mac, char *out, size_t out_sz) {
@@ -226,4 +238,99 @@ bool footholed_recon_log_format(void) {
     ESP_LOGI(TAG, "SD card formatted; fresh empty log at %s", LOG_PATH);
     xSemaphoreGive(s_guard);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Async format implementation.
+//
+// esp_vfs_fat_sdcard_format() has no progress callback, so the percent is
+// phase-driven: we advance it at the start of each stage. It reflects REAL
+// progress through the stages (mount check -> erase/format -> recreate log ->
+// done), just not byte-accurate within the long erase stage. The UI shows an
+// indeterminate-style bar while the erase runs so it never looks stalled.
+// ---------------------------------------------------------------------------
+static void format_task(void *)
+{
+    s_fmt_pct.store(5, std::memory_order_relaxed);
+    s_fmt_phase.store(FH_RECON_FMT_RUNNING, std::memory_order_release);
+
+    // Guard against no card (shouldn't happen — start() checks — but be safe).
+    if (!s_available || !s_card) {
+        s_fmt_phase.store(FH_RECON_FMT_DONE_NOCARD, std::memory_order_release);
+        s_fmt_task = nullptr;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    s_fmt_pct.store(10, std::memory_order_relaxed);
+    ESP_LOGW(TAG, "DESTRUCTIVE: async formatting SD card (all data erased)");
+
+    xSemaphoreTake(s_guard, portMAX_DELAY);
+    // The long stage: full erase + fresh FAT. Blocks this TASK, not the UI.
+    esp_err_t err = esp_vfs_fat_sdcard_format(MOUNT_POINT, s_card);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "async format failed: %s", esp_err_to_name(err));
+        s_available = false;
+        xSemaphoreGive(s_guard);
+        s_fmt_pct.store(100, std::memory_order_relaxed);
+        s_fmt_phase.store(FH_RECON_FMT_DONE_FAIL, std::memory_order_release);
+        s_fmt_task = nullptr;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    s_fmt_pct.store(85, std::memory_order_relaxed);
+    // Recreate the fresh empty log (header row only).
+    FILE *f = fopen(LOG_PATH, "w");
+    if (!f) {
+        ESP_LOGE(TAG, "async format OK but cannot recreate %s", LOG_PATH);
+        s_available = false;
+        xSemaphoreGive(s_guard);
+        s_fmt_pct.store(100, std::memory_order_relaxed);
+        s_fmt_phase.store(FH_RECON_FMT_DONE_FAIL, std::memory_order_release);
+        s_fmt_task = nullptr;
+        vTaskDelete(nullptr);
+        return;
+    }
+    fputs(CSV_HEADER, f);
+    fclose(f);
+
+    s_available = true;
+    xSemaphoreGive(s_guard);
+    ESP_LOGI(TAG, "async SD format complete; fresh empty log at %s", LOG_PATH);
+    s_fmt_pct.store(100, std::memory_order_relaxed);
+    s_fmt_phase.store(FH_RECON_FMT_DONE_OK, std::memory_order_release);
+    s_fmt_task = nullptr;
+    vTaskDelete(nullptr);
+}
+
+bool footholed_recon_log_format_start(void)
+{
+    // Already running? Refuse to start a second.
+    if (s_fmt_phase.load(std::memory_order_acquire) == FH_RECON_FMT_RUNNING) {
+        return false;
+    }
+    if (!s_available || !s_card) {
+        s_fmt_pct.store(0, std::memory_order_relaxed);
+        s_fmt_phase.store(FH_RECON_FMT_DONE_NOCARD, std::memory_order_release);
+        return false;
+    }
+    s_fmt_pct.store(0, std::memory_order_relaxed);
+    s_fmt_phase.store(FH_RECON_FMT_RUNNING, std::memory_order_release);
+    // 4 KB stack is plenty for the format call; priority below the UI so the
+    // display task keeps repainting the progress bar smoothly.
+    BaseType_t ok = xTaskCreate(format_task, "sd_format", 4096, nullptr,
+                                3, &s_fmt_task);
+    if (ok != pdPASS) {
+        s_fmt_task = nullptr;
+        s_fmt_phase.store(FH_RECON_FMT_DONE_FAIL, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+fh_recon_fmt_phase_t footholed_recon_log_format_poll(int *out_percent)
+{
+    if (out_percent) *out_percent = s_fmt_pct.load(std::memory_order_relaxed);
+    return (fh_recon_fmt_phase_t)s_fmt_phase.load(std::memory_order_acquire);
 }

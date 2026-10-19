@@ -16,6 +16,7 @@
 #include "ble_scan.h"
 #include "diagnostics.h"
 #include "sd_format.h"
+#include "recon_log.h"   // async SD-format start/poll API
 #include "lvgl.h"
 #include <stdio.h>
 #include <string.h>
@@ -254,23 +255,85 @@ void show_format_confirm_1(lv_event_t*) {
     lv_obj_add_event_cb(no, on_format_cancel, LV_EVENT_CLICKED, mbox);
 }
 
-// Executed only after BOTH confirmations. Runs the format and shows the result.
+// Executed only after BOTH confirmations. Starts the format on a background
+// task and shows a LIVE progress screen, so the LVGL UI keeps repainting
+// instead of freezing while the card is erased.
+//
+// A short LVGL timer polls the async-format status (safe: the timer runs on
+// the UI thread, so all LVGL calls below stay single-threaded) and updates the
+// bar; when the format finishes it swaps to the result message.
+static lv_obj_t* s_fmt_bar   = nullptr;  // progress bar on the format screen
+static lv_obj_t* s_fmt_label = nullptr;  // status line under the bar
+static lv_timer_t* s_fmt_timer = nullptr;
+
+static void fmt_result_msgbox(fh_recon_fmt_phase_t phase) {
+    bool ok = (phase == FH_RECON_FMT_DONE_OK);
+    lv_obj_t* mbox = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(mbox,
+        ok ? "Done" :
+        phase == FH_RECON_FMT_DONE_NOCARD ? "No card" : "Format failed");
+    lv_msgbox_add_text(mbox,
+        ok ? "SD card formatted. Fresh empty log created." :
+        phase == FH_RECON_FMT_DONE_NOCARD ? "No SD card detected. Nothing was changed." :
+        "Format FAILED. Card may need manual reformat.");
+    lv_obj_set_style_text_color(mbox,
+        lv_color_hex(ok ? 0x4ADE80 : 0xFBBF24), LV_PART_MAIN);
+    lv_obj_t* okbtn = lv_msgbox_add_footer_button(mbox, "OK");
+    lv_obj_add_event_cb(okbtn, on_format_cancel, LV_EVENT_CLICKED, mbox);
+}
+
+static void fmt_poll_timer_cb(lv_timer_t* t) {
+    int pct = 0;
+    fh_recon_fmt_phase_t phase = footholed_recon_log_format_poll(&pct);
+
+    if (s_fmt_bar)   lv_bar_set_value(s_fmt_bar, pct, LV_ANIM_ON);
+    if (s_fmt_label) {
+        lv_label_set_text(s_fmt_label,
+            pct < 10  ? "Preparing..." :
+            pct < 85  ? "Erasing & formatting card..." :
+            pct < 100 ? "Recreating log..." : "Finishing...");
+    }
+
+    if (phase != FH_RECON_FMT_RUNNING) {
+        // Terminal: tear down the timer and the progress screen, show result.
+        lv_timer_delete(t);
+        s_fmt_timer = nullptr;
+        s_fmt_bar = nullptr;
+        s_fmt_label = nullptr;
+        fmt_result_msgbox(phase);
+    }
+}
+
 void run_sd_format(lv_event_t* e) {
     lv_obj_t* prev = (lv_obj_t*)lv_event_get_user_data(e);
     if (prev) lv_msgbox_close(prev);
 
-    fh_sd_format_result_t r = footholed_sd_format();
+    // Kick off the format on its own task (non-blocking).
+    bool started = footholed_recon_log_format_start();
+    if (!started) {
+        // Either no card, or a format is already running. Report immediately.
+        int pct = 0;
+        fmt_result_msgbox(footholed_recon_log_format_poll(&pct));
+        return;
+    }
 
-    // Report the outcome on a modal so the user sees success / no-card / fail.
-    lv_obj_t* mbox = lv_msgbox_create(nullptr);
-    lv_msgbox_add_title(mbox,
-        r == FH_SD_FORMAT_OK ? "Done" :
-        r == FH_SD_FORMAT_NO_CARD ? "No card" : "Format failed");
-    lv_msgbox_add_text(mbox, footholed_sd_format_result_text(r));
-    lv_obj_set_style_text_color(mbox,
-        lv_color_hex(r == FH_SD_FORMAT_OK ? 0x4ADE80 : 0xFBBF24), LV_PART_MAIN);
-    lv_obj_t* ok = lv_msgbox_add_footer_button(mbox, "OK");
-    lv_obj_add_event_cb(ok, on_format_cancel, LV_EVENT_CLICKED, mbox);
+    // Build a simple modal progress panel: title, progress bar, status line.
+    lv_obj_t* panel = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(panel, "Formatting SD card");
+    lv_msgbox_add_text(panel, "Please wait — do not remove the card or power off.");
+
+    lv_obj_t* content = lv_msgbox_get_content(panel);
+    s_fmt_bar = lv_bar_create(content);
+    lv_obj_set_width(s_fmt_bar, lv_pct(90));
+    lv_obj_set_height(s_fmt_bar, 14);
+    lv_bar_set_range(s_fmt_bar, 0, 100);
+    lv_bar_set_value(s_fmt_bar, 0, LV_ANIM_OFF);
+
+    s_fmt_label = lv_label_create(content);
+    lv_label_set_text(s_fmt_label, "Preparing...");
+
+    // Poll every 100 ms on the UI thread until the task reports a terminal phase.
+    s_fmt_timer = lv_timer_create(fmt_poll_timer_cb, 100, nullptr);
 }
 
 void on_storage(lv_event_t*) { navigate("Storage"); }

@@ -78,3 +78,26 @@ void footholed_recon_log_ble(const FootHoledBLEDevice *devs, size_t count);
 // logger remains available and ready to append to the new empty log.
 // THIS CANNOT BE UNDONE.
 bool footholed_recon_log_format(void);
+
+// ---------------------------------------------------------------------------
+// ASYNC format: the synchronous footholed_recon_log_format() above blocks for
+// many seconds (full-card erase) and would freeze the LVGL UI thread if called
+// from a click handler. These run the SAME destructive format on a dedicated
+// FreeRTOS task and expose a phase + percent the UI can POLL without blocking.
+// ---------------------------------------------------------------------------
+typedef enum {
+    FH_RECON_FMT_IDLE = 0,   // no format has been started
+    FH_RECON_FMT_RUNNING,    // format in progress (see percent)
+    FH_RECON_FMT_DONE_OK,    // finished successfully; empty log recreated
+    FH_RECON_FMT_DONE_NOCARD,// no card mounted; nothing done
+    FH_RECON_FMT_DONE_FAIL,  // format failed; card state undefined
+} fh_recon_fmt_phase_t;
+
+// Start the async format. Returns false if a format is already running or no
+// card is mounted (phase is set to DONE_NOCARD in that case). Non-blocking.
+bool footholed_recon_log_format_start(void);
+
+// Poll async-format status. Writes the current phase and a coarse 0..100
+// percent (phase-driven, not byte-accurate). Safe to call from the UI thread
+// every frame. Returns the phase for convenience.
+fh_recon_fmt_phase_t footholed_recon_log_format_poll(int *out_percent);
