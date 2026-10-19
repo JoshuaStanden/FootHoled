@@ -34,10 +34,13 @@ constexpr const char *CSV_HEADER  =
     "uptime_s,type,identifier,mac,addr_type,channel,rssi,auth_or_advtype\n";
 
 // ---------------------------------------------------------------------------
-// TODO(HW): SDMMC pins for the onboard microSD slot (1-bit mode).
-// These are the documented ESP32-S3-Touch-LCD-3.5*B* values (CLK 11 / CMD 10 /
-// D0 9). docs/H0.1_Pin_Map.md warns these must NOT be assumed identical on the
-// non-B board — confirm against the schematic and edit HERE only.
+// SDMMC pins for the onboard microSD slot (1-bit mode), VERIFIED against the
+// ESP32-S3-Touch-LCD-3.5 (non-B) Rev2.0 schematic GPIO table:
+//   IO11 = SD_CLK, IO10 = SD_CMD, IO9 = SD_D0. (SD_CD/card-detect is on the
+//   TCA/CH422 I/O expander as EXIO3 — not wired to a GPIO, so not used here.)
+// These lines have no strong external pull-ups on this board, so internal
+// pull-ups MUST be enabled in the slot config below or the card never ACKs
+// (send_op_cond times out with 0x107 / ESP_ERR_TIMEOUT).
 // ---------------------------------------------------------------------------
 constexpr int FH_PIN_SD_CLK = 11;
 constexpr int FH_PIN_SD_CMD = 10;
@@ -85,11 +88,20 @@ bool footholed_recon_log_init() {
     mount_cfg.allocation_unit_size = 16 * 1024;
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    // Start the handshake slow; this board's SD lines are marginal without
+    // strong external pull-ups, and a conservative probe clock improves
+    // first-contact reliability. FatFs bumps to the card's real speed after.
+    host.max_freq_khz = SDMMC_FREQ_PROBING;   // 400 kHz for init
+
     sdmmc_slot_config_t slot_cfg = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_cfg.width = 1;                 // 1-bit mode: only CLK/CMD/D0 needed
     slot_cfg.clk = (gpio_num_t)FH_PIN_SD_CLK;
     slot_cfg.cmd = (gpio_num_t)FH_PIN_SD_CMD;
     slot_cfg.d0  = (gpio_num_t)FH_PIN_SD_D0;
+    // CMD and D0 need pull-ups; this board has none strong enough externally,
+    // so enable the ESP32's internal pull-ups. Without this send_op_cond times
+    // out (0x107) and the card is never detected.
+    slot_cfg.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
     esp_err_t err = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_cfg,
                                             &mount_cfg, &s_card);
