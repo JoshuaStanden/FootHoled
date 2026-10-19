@@ -310,13 +310,16 @@ static void format_task(void *)
     xSemaphoreTake(s_guard, portMAX_DELAY);
 
     esp_err_t err;
-    // Format at FULL capacity: allocation_unit_size = 0 lets f_mkfs() size
-    // clusters from the real card capacity (a fixed 16 KB unit under-reported
-    // large cards, e.g. "16 GB" on a 32 GB card).
+    // Cluster size matters a LOT for format SPEED: with allocation_unit_size=0
+    // f_mkfs auto-picked 512-byte clusters on this card, producing a huge FAT
+    // and a multi-MINUTE format (confirmed by the ESP-IDF maintainer: a long
+    // f_mkfs means too-small a cluster). Use 32 KB — a normal FAT32 cluster for
+    // 8–32 GB cards — so the FAT is small and the format finishes in seconds.
+    // (32 KB is also fine for this logger's CSV write pattern.)
     esp_vfs_fat_mount_config_t fmt_cfg = {};
     fmt_cfg.format_if_mount_failed = true;   // reclaim an unreadable/exFAT card
     fmt_cfg.max_files              = 2;
-    fmt_cfg.allocation_unit_size   = 0;      // auto-size for full capacity
+    fmt_cfg.allocation_unit_size   = 32 * 1024;  // 32 KB clusters (fast f_mkfs)
 
     if (status == FH_SD_CARD_READY) {
         // Already mounted via the VFS helper — format in place.
