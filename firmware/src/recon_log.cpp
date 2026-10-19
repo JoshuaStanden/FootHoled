@@ -34,7 +34,8 @@ const char *TAG = "FootHoled/log";
 constexpr const char *MOUNT_POINT = "/sdcard";
 constexpr const char *LOG_PATH    = "/sdcard/recon_log.csv";
 constexpr const char *CSV_HEADER  =
-    "uptime_s,type,identifier,mac,addr_type,channel,rssi,auth_or_advtype\n";
+    "uptime_s,type,identifier,mac,addr_type,channel,rssi,auth_or_advtype,"
+    "ble_flags,ble_appearance,ble_tx_power,ble_svc_uuids,ble_mfg_id\n";
 
 // ---------------------------------------------------------------------------
 // SDMMC pins for the onboard microSD slot (1-bit mode), VERIFIED against the
@@ -197,10 +198,11 @@ void footholed_recon_log_wifi(const FootHoledAP *aps, size_t count) {
         char mac[18];
         for (size_t i = 0; i < count; ++i) {
             format_mac(aps[i].bssid, mac, sizeof(mac));
-            // uptime,type,identifier(SSID),mac,addr_type(blank),channel,rssi,authmode
+            // uptime,type,identifier(SSID),mac,addr_type(blank),channel,rssi,authmode,
+            // then 5 blank BLE-capability columns so wifi/ble rows stay aligned.
             fprintf(f, "%u,wifi,", (unsigned)t);
             write_csv_field(f, aps[i].ssid);
-            fprintf(f, ",%s,,%u,%d,%u\n",
+            fprintf(f, ",%s,,%u,%d,%u,,,,,\n",
                     mac, (unsigned)aps[i].channel, (int)aps[i].rssi,
                     (unsigned)aps[i].authmode);
         }
@@ -220,12 +222,32 @@ void footholed_recon_log_ble(const FootHoledBLEDevice *devs, size_t count) {
         char mac[18];
         for (size_t i = 0; i < count; ++i) {
             format_mac(devs[i].addr, mac, sizeof(mac));
-            // uptime,type,identifier(name),mac,addr_type,channel(blank),rssi,adv_type
+            // uptime,type,identifier(name),mac,addr_type,channel(blank),rssi,adv_type,
+            // then capability columns: flags,appearance,tx_power,svc_uuids,mfg_id
             fprintf(f, "%u,ble,", (unsigned)t);
             write_csv_field(f, devs[i].name);
-            fprintf(f, ",%s,%u,,%d,%u\n",
+            fprintf(f, ",%s,%u,,%d,%u,",
                     mac, (unsigned)devs[i].addr_type, (int)devs[i].rssi,
                     (unsigned)devs[i].adv_type);
+            // flags (hex), appearance (hex), tx_power (dBm or blank if absent)
+            fprintf(f, "0x%02X,0x%04X,", devs[i].adv_flags, devs[i].appearance);
+            if (devs[i].tx_power == FH_BLE_TX_POWER_NONE) fprintf(f, ",");
+            else fprintf(f, "%d,", (int)devs[i].tx_power);
+            // svc_uuids: ';'-joined 16-bit UUIDs in one quoted field (so the
+            // internal separator never breaks the CSV column layout).
+            {
+                char uuids[8 * 7 + 1];  // up to 8 * "0xXXXX;" + NUL
+                size_t p = 0;
+                for (uint8_t u = 0; u < devs[i].svc_uuid_count && p + 7 < sizeof(uuids); ++u) {
+                    p += snprintf(uuids + p, sizeof(uuids) - p, "%s0x%04X",
+                                  u ? ";" : "", devs[i].svc_uuids[u]);
+                }
+                uuids[p] = 0;
+                write_csv_field(f, uuids);
+            }
+            // mfg_id (hex) or blank if none
+            if (devs[i].mfg_id == FH_BLE_MFG_NONE) fprintf(f, ",\n");
+            else fprintf(f, ",0x%04X\n", devs[i].mfg_id);
         }
         fclose(f);
     } else {

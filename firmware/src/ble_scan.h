@@ -11,7 +11,18 @@ struct FootHoledBLEDevice {
     uint8_t addr_type;  // 0 = public, 1 = random (BLE_ADDR_* from the controller)
     int8_t rssi;        // signal strength in dBm
     uint8_t adv_type;   // advertising PDU type (connectable/scannable/etc.)
+    // --- capability info parsed from the advertisement (for the recon log) ---
+    uint8_t  adv_flags;        // AD Flags byte (0 if not advertised)
+    uint16_t appearance;       // GAP Appearance (0 if not advertised)
+    int8_t   tx_power;         // advertised TX power dBm (TX_POWER_NONE if absent)
+    uint16_t svc_uuids[8];     // advertised 16-bit service UUIDs (capabilities)
+    uint8_t  svc_uuid_count;   // number of valid entries in svc_uuids
+    uint16_t mfg_id;           // manufacturer ID from mfg-specific data (MFG_NONE if absent)
 };
+
+// Sentinels for "field not present in the advertisement".
+constexpr int8_t   FH_BLE_TX_POWER_NONE = INT8_MIN;
+constexpr uint16_t FH_BLE_MFG_NONE      = 0xFFFF;
 
 // Thread-safe snapshot interface, identical in shape to the Wi-Fi scanner.
 // Call init once after NVS init (and after the Wi-Fi scanner, since both share

@@ -83,6 +83,54 @@ void extract_name(const uint8_t *data, uint8_t len, char *out, size_t out_sz) {
     }
 }
 
+// Parse capability fields out of the advertisement with the same TLV walk as
+// extract_name. Fills flags/appearance/tx_power/service-UUIDs/mfg-id on `dev`;
+// absent fields are left at their "none" sentinels. AD type constants per the
+// Bluetooth Core Supplement (CSS) / NimBLE BLE_HS_ADV_TYPE_* values.
+void extract_caps(const uint8_t *data, uint8_t len, FootHoledBLEDevice *dev) {
+    dev->adv_flags      = 0;
+    dev->appearance     = 0;
+    dev->tx_power       = FH_BLE_TX_POWER_NONE;
+    dev->svc_uuid_count = 0;
+    dev->mfg_id         = FH_BLE_MFG_NONE;
+
+    size_t i = 0;
+    while (i + 1 < len) {
+        uint8_t field_len = data[i];
+        if (field_len == 0 || i + 1 + field_len > len) break;
+        uint8_t type = data[i + 1];
+        const uint8_t *val = &data[i + 2];
+        uint8_t vlen = field_len - 1;
+
+        switch (type) {
+        case BLE_HS_ADV_TYPE_FLAGS:
+            if (vlen >= 1) dev->adv_flags = val[0];
+            break;
+        case BLE_HS_ADV_TYPE_TX_PWR_LVL:
+            if (vlen >= 1) dev->tx_power = (int8_t)val[0];
+            break;
+        case BLE_HS_ADV_TYPE_APPEARANCE:
+            if (vlen >= 2) dev->appearance = (uint16_t)(val[0] | (val[1] << 8));
+            break;
+        case BLE_HS_ADV_TYPE_INCOMP_UUIDS16:
+        case BLE_HS_ADV_TYPE_COMP_UUIDS16:
+            // List of 16-bit service UUIDs, little-endian, 2 bytes each.
+            for (uint8_t o = 0; o + 1 < vlen && dev->svc_uuid_count < 8; o += 2) {
+                dev->svc_uuids[dev->svc_uuid_count++] =
+                    (uint16_t)(val[o] | (val[o + 1] << 8));
+            }
+            break;
+        case BLE_HS_ADV_TYPE_MFG_DATA:
+            // First 2 bytes of manufacturer-specific data are the company ID.
+            if (vlen >= 2) dev->mfg_id = (uint16_t)(val[0] | (val[1] << 8));
+            break;
+        default:
+            break;
+        }
+        i += 1 + field_len;
+    }
+}
+
 int gap_event(struct ble_gap_event *event, void *arg) {
     (void)arg;
     switch (event->type) {
@@ -108,6 +156,9 @@ int gap_event(struct ble_gap_event *event, void *arg) {
                 strncpy(working[idx].name, name, sizeof(working[idx].name));
                 working[idx].name[sizeof(working[idx].name) - 1] = 0;
             }
+            // Parse capability fields (flags/appearance/tx power/service UUIDs/
+            // mfg id) from this advertisement for the recon log.
+            extract_caps(d->data, d->length_data, &working[idx]);
         }
         xSemaphoreGive(guard);
         return 0;
