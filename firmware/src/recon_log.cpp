@@ -265,9 +265,24 @@ static void format_task(void *)
     s_fmt_pct.store(10, std::memory_order_relaxed);
     ESP_LOGW(TAG, "DESTRUCTIVE: async formatting SD card (all data erased)");
 
+    // Stop the Wi-Fi/BLE scanner log writers from touching the card DURING the
+    // format. They check s_available before taking s_guard, so clearing it here
+    // makes them no-op instead of contending for the lock / the FAT volume
+    // while esp_vfs_fat_sdcard_format() unmounts and rebuilds it. Without this
+    // the UI appeared to freeze under scanner contention.
+    s_available = false;
+
     xSemaphoreTake(s_guard, portMAX_DELAY);
+    // Format at the card's FULL capacity: allocation_unit_size = 0 lets f_mkfs()
+    // pick the cluster size from the real card size. A fixed 16 KB unit (the
+    // mount default) produced a FAT that under-reported capacity (e.g. "16 GB"
+    // on a 32 GB card). use_one_fat=false keeps the redundant second FAT.
+    esp_vfs_fat_mount_config_t fmt_cfg = {};
+    fmt_cfg.format_if_mount_failed = true;
+    fmt_cfg.max_files              = 2;
+    fmt_cfg.allocation_unit_size   = 0;   // auto-size for full capacity
     // The long stage: full erase + fresh FAT. Blocks this TASK, not the UI.
-    esp_err_t err = esp_vfs_fat_sdcard_format(MOUNT_POINT, s_card);
+    esp_err_t err = esp_vfs_fat_sdcard_format_cfg(MOUNT_POINT, s_card, &fmt_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "async format failed: %s", esp_err_to_name(err));
         s_available = false;
