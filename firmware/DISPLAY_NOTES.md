@@ -37,6 +37,20 @@ blank screen, capture the EXACT error before reverting — a silent blank is a
 different fault than the NO_MEM storm above, and reverting to PSRAM brings the
 NO_MEM storm back.**
 
+FOLLOW-UP (same day): simply switching the buffers to internal DMA RAM was NOT
+enough — the allocation itself failed and fell back to PSRAM
+("internal DMA draw-buffer alloc failed; falling back to PSRAM"), because the
+radios start before board init and fragment internal RAM, leaving no contiguous
+block. ROBUST FIX (in `sdkconfig.defaults`), which removes the race entirely:
+- `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072` — a 128 KB internal DMA pool
+  that normal malloc() cannot consume, so the draw buffers always fit.
+- `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` — Wi-Fi/LWIP buffers go to PSRAM.
+- `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y` — net80211/pp/bt/lwip .bss to
+  PSRAM.
+Plus: board init is ordered before the radios in main.cpp, and buffers are
+`V_RES/20`. The pre-alloc heap log in board_adapter.cpp prints the internal DMA
+free/largest-block so a regression is diagnosable, not silent.
+
 ### 2. Missing TCA9554 I/O-expander reset pulse  (fixed — integrated)
 On this board the ST7796 LCD reset and FT6336 touch reset are **not** on ESP32
 GPIOs (`GPIO_NUM_NC`) — they are driven by a **TCA9554 I2C expander**. The vendor
