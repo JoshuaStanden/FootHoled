@@ -110,7 +110,9 @@ bool footholed_recon_log_init() {
         f = fopen(LOG_PATH, "w");
         if (!f) {
             ESP_LOGE(TAG, "cannot create %s", LOG_PATH);
-            esp_vfs_fat_sdmmc_unmount();
+            // ESP-IDF 6.1 removed the arg-less esp_vfs_fat_sdmmc_unmount();
+            // use the handle-based unmount with the mount point and card.
+            esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
             s_card = nullptr;
             s_available = false;
             return false;
