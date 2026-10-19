@@ -2,6 +2,15 @@
 # Target: Waveshare ESP32-S3-Touch-LCD-3.5 (ESP32-S3R8, 16 MB flash, 8 MB PSRAM)
 # TODO(HW): verify SPIRAM mode (octal vs quad) on the physical board revision.
 
+# Flash + partition table.
+# idf.py ignores partitions.csv unless the custom table is selected here (the
+# default single-app table gives only a 1 MB factory slot, which the ~1.7 MB
+# app overflows). 16 MB flash must also be declared or the 6M/6M slots in
+# partitions.csv run off the end of a default 2 MB image.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
 # PSRAM
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
