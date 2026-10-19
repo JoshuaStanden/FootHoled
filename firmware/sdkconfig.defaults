@@ -37,3 +37,33 @@ CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 #   CONFIG_FATFS_LONG_FILENAMES and the exFAT option (CONFIG_FATFS_API_ENCODING).
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# LVGL (lvgl/lvgl 9.2.2) configuration via Kconfig.
+# idf.py does NOT read src/lv_conf.h, so LVGL is configured here instead; these
+# must stay in sync with the app's expectations (see firmware/CMakeLists.txt).
+# Skip any custom lv_conf.h so the LVGL component and the app agree on one config.
+CONFIG_LV_CONF_SKIP=y
+# 16-bit RGB565 to match the ST7796 panel (bits_per_pixel=16 in board_adapter.cpp).
+CONFIG_LV_COLOR_DEPTH_16=y
+# Fonts: 14px is the UI default (ui.cpp); 28px is the boot-splash wordmark (splash.cpp).
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+# Flex layout is used by every screen (lv_obj_set_flex_flow).
+CONFIG_LV_USE_FLEX=y
+# Widgets the app instantiates (match the removed lv_conf.h set): label + line +
+# bar for the splash (splash.cpp); button, switch, slider for the UI (ui.cpp).
+CONFIG_LV_USE_LABEL=y
+CONFIG_LV_USE_BUTTON=y
+CONFIG_LV_USE_SWITCH=y
+CONFIG_LV_USE_BAR=y
+CONFIG_LV_USE_SLIDER=y
+CONFIG_LV_USE_LINE=y
+# Use newlib (CLIB) for malloc/string/sprintf, matching the old lv_conf.h.
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+# Software complex draw engine (default y in LVGL) is required by the
+# IMU-driven software rotation in board_adapter.cpp flush_cb(); pin it on.
+CONFIG_LV_USE_DRAW_SW=y
+CONFIG_LV_DRAW_SW_COMPLEX=y
