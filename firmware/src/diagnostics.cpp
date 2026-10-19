@@ -25,7 +25,7 @@
 #include "diagnostics.h"
 #include "board_adapter.h"
 #include "qmi8658.h"
-#include "ina228.h"
+#include "axp2101.h"
 #include "wifi_scan.h"
 #include "ble_scan.h"
 #include "recon_log.h"
@@ -55,13 +55,12 @@ static const char *TAG = "FootHoled/diag";
 // ---------------------------------------------------------------------------
 struct i2c_known_t { uint8_t addr; const char *name; };
 static const i2c_known_t kI2cKnown[] = {
-    { 0x40, "INA228 pwr"   },  // power/battery monitor
+    { 0x34, "AXP2101 PMU"  },  // power management IC (battery/charge)
     { 0x51, "PCF85063 RTC" },  // real-time clock (no driver yet)
     { 0x6A, "QMI8658 IMU"  },  // IMU (SA0=GND)
     { 0x6B, "QMI8658 IMU'" },  // IMU (SA0=VDD) alternate
     // The following are documented on the shared bus but not yet driven; a scan
     // still reports whether they ACK, which is useful bring-up information.
-    { 0x34, "AXP2101 PMIC" },  // power management IC
     { 0x18, "ES8311 audio" },  // audio codec
 };
 
@@ -211,23 +210,30 @@ size_t footholed_diagnostics_run(fh_diag_result_t *out, size_t max,
         }
     }
 
-    // ---- 6. Power monitor (INA228) ----------------------------------------
+    // ---- 6. Power monitor (AXP2101 PMU) -----------------------------------
+    // This board's power path is the AXP2101 PMU (I2C 0x34), not an INA228.
     if (n < max) {
         if (!bus) {
-            set_result(&out[n++], "Power (INA228)", FH_DIAG_SKIPPED, "no I2C bus");
+            set_result(&out[n++], "Power (AXP2101)", FH_DIAG_SKIPPED, "no I2C bus");
         } else {
-            ina228_handle_t h = nullptr;
-            if (ina228_init(bus, INA228_I2C_ADDR_DEFAULT, &h) == ESP_OK && h) {
-                float mv = 0;
-                if (ina228_get_bus_voltage_mv(h, &mv) == ESP_OK) {
-                    snprintf(detail, sizeof(detail), "VBUS %.2f V", mv / 1000.0f);
+            axp2101_handle_t h = nullptr;
+            if (axp2101_init(bus, AXP2101_I2C_ADDR_DEFAULT, &h) == ESP_OK && h) {
+                uint8_t pct = 0;
+                axp2101_charge_state_t cs = AXP2101_CHG_UNKNOWN;
+                bool have_pct = (axp2101_get_battery_percent(h, &pct) == ESP_OK);
+                axp2101_get_charge_state(h, &cs);
+                if (have_pct) {
+                    snprintf(detail, sizeof(detail), "batt %u%%, %s",
+                             pct, axp2101_charge_state_text(cs));
                 } else {
-                    snprintf(detail, sizeof(detail), "id ok");
+                    // PMU present but fuel gauge not reporting a level yet.
+                    snprintf(detail, sizeof(detail), "PMU ok, %s",
+                             axp2101_charge_state_text(cs));
                 }
-                set_result(&out[n++], "Power (INA228)", FH_DIAG_OK, detail);
-                ina228_deinit(h);
+                set_result(&out[n++], "Power (AXP2101)", FH_DIAG_OK, detail);
+                axp2101_deinit(h);
             } else {
-                set_result(&out[n++], "Power (INA228)", FH_DIAG_NOT_PRESENT, "no mfg ID");
+                set_result(&out[n++], "Power (AXP2101)", FH_DIAG_NOT_PRESENT, "no ACK");
             }
         }
     }

@@ -9,6 +9,7 @@ idf_component_register(
         "settings.cpp"
         "mcp23017.cpp"
         "ina228.cpp"
+        "axp2101.cpp"
         "qmi8658.cpp"
         "recon_log.cpp"
         "sd_format.cpp"
