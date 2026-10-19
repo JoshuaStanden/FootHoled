@@ -262,6 +262,7 @@ void show_format_confirm_1(lv_event_t*) {
 // A short LVGL timer polls the async-format status (safe: the timer runs on
 // the UI thread, so all LVGL calls below stay single-threaded) and updates the
 // bar; when the format finishes it swaps to the result message.
+static lv_obj_t* s_fmt_panel = nullptr;  // the progress msgbox itself (to close)
 static lv_obj_t* s_fmt_bar   = nullptr;  // progress bar on the format screen
 static lv_obj_t* s_fmt_label = nullptr;  // status line under the bar
 static lv_timer_t* s_fmt_timer = nullptr;
@@ -308,9 +309,10 @@ static void fmt_poll_timer_cb(lv_timer_t* t) {
     }
 
     if (phase != FH_RECON_FMT_RUNNING) {
-        // Terminal: tear down the timer and the progress screen, show result.
+        // Terminal: tear down the timer, CLOSE the progress panel, show result.
         lv_timer_delete(t);
         s_fmt_timer = nullptr;
+        if (s_fmt_panel) { lv_msgbox_close(s_fmt_panel); s_fmt_panel = nullptr; }
         s_fmt_bar = nullptr;
         s_fmt_label = nullptr;
         sweep = 10;   // reset for a future format
@@ -332,11 +334,12 @@ void run_sd_format(lv_event_t* e) {
     }
 
     // Build a simple modal progress panel: title, progress bar, status line.
-    lv_obj_t* panel = lv_msgbox_create(nullptr);
-    lv_msgbox_add_title(panel, "Formatting SD card");
-    lv_msgbox_add_text(panel, "Please wait — do not remove the card or power off.");
+    // Stored in s_fmt_panel so the poll timer can CLOSE it on completion.
+    s_fmt_panel = lv_msgbox_create(nullptr);
+    lv_msgbox_add_title(s_fmt_panel, "Formatting SD card");
+    lv_msgbox_add_text(s_fmt_panel, "Please wait — do not remove the card or power off.");
 
-    lv_obj_t* content = lv_msgbox_get_content(panel);
+    lv_obj_t* content = lv_msgbox_get_content(s_fmt_panel);
     s_fmt_bar = lv_bar_create(content);
     lv_obj_set_width(s_fmt_bar, lv_pct(90));
     lv_obj_set_height(s_fmt_bar, 14);
