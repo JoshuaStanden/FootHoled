@@ -11,13 +11,31 @@ live in their own files and must not alter it.
 
 ## Confirmed causes of the "blank display" / display-breaks loop
 
-### 1. LVGL draw buffers moved off PSRAM  (the original regression)
-A build changed the draw buffers from `MALLOC_CAP_SPIRAM` (baseline, works) to
-`MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`, arguing PSRAM "can't DMA." That reasoning
-is from the **RGB parallel-panel** driver, not this **SPI** panel. The ESP-IDF
-SPI master handles a PSRAM source buffer (internal bounce as needed). The
-baseline uses PSRAM and works.
-**Rule: keep the draw buffers in `MALLOC_CAP_SPIRAM`, `FH_BUF_LINES = V_RES/10`.**
+### 1. LVGL draw buffers — location vs. SPI-DMA bounce (UPDATED after HW test)
+History (recorded before the board existed): a build changed the draw buffers
+from `MALLOC_CAP_SPIRAM` to `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`; the display
+broke and it was rolled back to PSRAM. The failure mode was never captured, and
+that attempt also coincided with other unknowns (possibly the QUAD-PSRAM mistake
+below or a pre-TCA9554 build), so "internal RAM" may have been mis-blamed.
+
+HARDWARE FINDING (2026-10-18, real board): with the buffers in PSRAM, once
+Wi-Fi + NimBLE are running the SPI master can no longer allocate its per-flush
+internal bounce buffer for the PSRAM source, and the display dies with a storm of:
+```
+E spi_common: spicommon_dma_setup_priv_buffer: Failed to allocate priv TX buffer
+E lcd_panel.io.spi: panel_io_spi_tx_color: spi transmit (queue) color failed
+E st7796_general: panel_st7796_draw_bitmap: send command failed
+E FootHoled/board: draw_bitmap failed: ESP_ERR_NO_MEM
+```
+S3 SPI-DMA cannot read PSRAM directly, so a PSRAM source forces a bounce copy
+that starves under radio memory pressure. Fix: allocate all three draw buffers
+(buf1, buf2, and s_rotate_buf — all can reach SPI DMA) in
+`MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`, reserved at boot before the radios
+start (~90 KB total at `V_RES/10`), with a PSRAM fallback if internal is short.
+**Rule (current): draw buffers in internal DMA RAM. If this ever reintroduces a
+blank screen, capture the EXACT error before reverting — a silent blank is a
+different fault than the NO_MEM storm above, and reverting to PSRAM brings the
+NO_MEM storm back.**
 
 ### 2. Missing TCA9554 I/O-expander reset pulse  (fixed — integrated)
 On this board the ST7796 LCD reset and FT6336 touch reset are **not** on ESP32

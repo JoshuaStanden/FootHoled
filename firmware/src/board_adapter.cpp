@@ -22,12 +22,15 @@
  * leaves the panel/touch held in reset: the display comes up blank even though
  * every esp_lcd_* call returns ESP_OK.
  *
- * DRAW BUFFERS: allocated in PSRAM (MALLOC_CAP_SPIRAM), matching the known-good
- * justjoshin baseline. The ST7796 is on the SPI master path, which transparently
- * bounces a PSRAM source buffer when needed; this is the proven-working config.
- * Do NOT move these to MALLOC_CAP_INTERNAL "to enable DMA" — that reasoning is
- * from the RGB-parallel-panel driver, not this SPI path, and it has broken the
- * display before. See firmware/DISPLAY_NOTES.md.
+ * DRAW BUFFERS: allocated in DMA-capable INTERNAL RAM
+ * (MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL). An earlier revision kept them in
+ * PSRAM, but on the physical S3 board the SPI master could not allocate its
+ * per-flush internal bounce buffer for a PSRAM source once Wi-Fi + NimBLE were
+ * running, and the display failed with repeated
+ * "spicommon_dma_setup_priv_buffer: Failed to allocate priv TX buffer" /
+ * ESP_ERR_NO_MEM. S3 SPI-DMA cannot read PSRAM directly, so the buffers must
+ * be internal. They are reserved at boot (before the radios start); see the
+ * allocation site and firmware/DISPLAY_NOTES.md.
  *
  * IMPORTANT — per AGENTS.md rule #12: this has NOT been compiled, flashed, or
  * tested on hardware. It is a faithful port of the vendor configuration; treat
@@ -396,17 +399,38 @@ bool footholed_board_init(void)
         return false;
     }
 
-    // LVGL draw buffers live in PSRAM (MALLOC_CAP_SPIRAM) — the known-good
-    // baseline configuration. The ST7796 SPI master path handles PSRAM source
-    // buffers (internal bounce as needed); this is the proven-working setup.
-    // Keeping them out of internal SRAM also leaves that scarce region for
-    // Wi-Fi + NimBLE + FatFs. Do NOT switch to MALLOC_CAP_INTERNAL — see the
-    // file header and firmware/DISPLAY_NOTES.md.
-    s_lvgl_buf1  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-    s_lvgl_buf2  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-    s_rotate_buf = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    // LVGL draw buffers must be DMA-capable INTERNAL RAM.
+    //
+    // HARDWARE FINDING (supersedes the earlier "keep in PSRAM" note): on the
+    // physical S3 board, once Wi-Fi + NimBLE are up the SPI master could no
+    // longer allocate its per-flush internal bounce buffer for a PSRAM source,
+    // and the display failed with a storm of:
+    //   spi_common: spicommon_dma_setup_priv_buffer: Failed to allocate priv TX buffer
+    //   st7796: draw_bitmap failed: ESP_ERR_NO_MEM
+    // S3 SPI-DMA cannot read PSRAM directly, so PSRAM buffers force a bounce
+    // copy that starves under radio memory pressure. All three buffers below
+    // can be handed to esp_lcd_panel_draw_bitmap() (buf1/buf2 directly, and
+    // s_rotate_buf on the rotated path), so ALL must be DMA-capable. At 1/10
+    // frame each (~30 KB) the ~90 KB is reserved here at boot, before the
+    // radios start, so it cannot fail later.
+    const uint32_t cap_dma = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+    s_lvgl_buf1  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), cap_dma);
+    s_lvgl_buf2  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), cap_dma);
+    s_rotate_buf = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), cap_dma);
     if (!s_lvgl_buf1 || !s_lvgl_buf2 || !s_rotate_buf) {
-        ESP_LOGE(TAG, "LVGL draw buffer allocation failed (SPIRAM)");
+        // Degraded fallback: if internal DMA RAM is exhausted, retry in PSRAM
+        // so the UI still runs (the SPI bounce path returns, with the risk the
+        // finding above describes) rather than refusing to boot.
+        ESP_LOGW(TAG, "internal DMA draw-buffer alloc failed; falling back to PSRAM");
+        if (s_lvgl_buf1) { heap_caps_free(s_lvgl_buf1); }
+        if (s_lvgl_buf2) { heap_caps_free(s_lvgl_buf2); }
+        if (s_rotate_buf){ heap_caps_free(s_rotate_buf); }
+        s_lvgl_buf1  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+        s_lvgl_buf2  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+        s_rotate_buf = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+    }
+    if (!s_lvgl_buf1 || !s_lvgl_buf2 || !s_rotate_buf) {
+        ESP_LOGE(TAG, "LVGL draw buffer allocation failed");
         if (s_lvgl_buf1) { heap_caps_free(s_lvgl_buf1); s_lvgl_buf1 = nullptr; }
         if (s_lvgl_buf2) { heap_caps_free(s_lvgl_buf2); s_lvgl_buf2 = nullptr; }
         if (s_rotate_buf){ heap_caps_free(s_rotate_buf);s_rotate_buf = nullptr; }
