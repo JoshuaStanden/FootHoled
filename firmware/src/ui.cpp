@@ -88,6 +88,28 @@ lv_obj_t* ble_status = nullptr;
 lv_timer_t* ble_timer = nullptr;
 uint32_t ble_last_generation = UINT32_MAX;
 
+// Running append-only lists: track MACs/BSSIDs already shown so each scan cycle
+// only APPENDS genuinely new devices to the bottom (never rebuilds the list),
+// which keeps the user's scroll position instead of snapping back to the top.
+// Capacity 128 each; once full, new devices stop being added (list is huge by
+// then). Reset on entering the Wi-Fi/BLE screen (see navigate()).
+constexpr size_t SEEN_MAX = 128;
+uint8_t  wifi_seen[SEEN_MAX][6]; size_t wifi_seen_n = 0;
+uint8_t  ble_seen[SEEN_MAX][6];  size_t ble_seen_n  = 0;
+
+// Return true if mac was already seen (so the caller skips it); otherwise
+// record it and return false (caller appends a new row). When the set is full
+// we return true for anything not already in it, so the list stops growing
+// rather than re-appending duplicates every cycle.
+static bool seen_contains_or_add(uint8_t seen[][6], size_t* count, const uint8_t mac[6]) {
+    for (size_t i = 0; i < *count; ++i) {
+        if (memcmp(seen[i], mac, 6) == 0) return true;   // already shown
+    }
+    if (*count >= SEEN_MAX) return true;                 // full: skip new ones
+    memcpy(seen[*count], mac, 6); (*count)++;
+    return false;                                        // newly added -> draw
+}
+
 void mask_identifier(char *s) {
     if (!footholed_settings_get_privacy_on()) return;
     size_t len = strlen(s);
@@ -117,10 +139,12 @@ void wifi_refresh(lv_timer_t*) {
     if (gen == wifi_last_generation && !error) return;
     wifi_last_generation=gen;
     if (error) lv_label_set_text(wifi_status,"Wi-Fi scan failed; retrying...");
-    else if (!n) lv_label_set_text(wifi_status,"Scanning for access points...");
-    else lv_label_set_text_fmt(wifi_status,"%u APs found / refreshing",(unsigned)n);
-    lv_obj_clean(wifi_list);
+    else if (!wifi_seen_n && !n) lv_label_set_text(wifi_status,"Scanning for access points...");
+    // else: status updated to the cumulative total after the append loop below.
+    // Append-only: do NOT clean the list (that would reset scroll to top). Only
+    // add BSSIDs not seen before, so the list is a cumulative running record.
     for (size_t i=0;i<n;++i) {
+        if (seen_contains_or_add(wifi_seen,&wifi_seen_n,aps[i].bssid)) continue;
         char ssid[33];
         strncpy(ssid, aps[i].ssid, sizeof(ssid)); ssid[32]=0;
         if (!ssid[0]) strcpy(ssid,"<hidden>");
@@ -138,6 +162,8 @@ void wifi_refresh(lv_timer_t*) {
         lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
         lv_obj_set_style_pad_bottom(entry,8,0);
     }
+    if (!error && (wifi_seen_n || n))
+        lv_label_set_text_fmt(wifi_status,"%u APs seen (running)",(unsigned)wifi_seen_n);
 }
 void on_wifi(lv_event_t*) { navigate("WiFi"); }
 
@@ -160,10 +186,10 @@ void ble_refresh(lv_timer_t*) {
     if (gen == ble_last_generation && !error) return;
     ble_last_generation=gen;
     if (error) lv_label_set_text(ble_status,"BLE scan failed; retrying...");
-    else if (!n) lv_label_set_text(ble_status,"Scanning for BLE devices...");
-    else lv_label_set_text_fmt(ble_status,"%u devices found / refreshing",(unsigned)n);
-    lv_obj_clean(ble_list);
+    else if (!ble_seen_n && !n) lv_label_set_text(ble_status,"Scanning for BLE devices...");
+    // Append-only running list: only add addresses not seen before, never clean.
     for (size_t i=0;i<n;++i) {
+        if (seen_contains_or_add(ble_seen,&ble_seen_n,devs[i].addr)) continue;
         char name[33];
         strncpy(name, devs[i].name, sizeof(name)); name[32]=0;
         if (!name[0]) strcpy(name,"<no name>");
@@ -181,6 +207,8 @@ void ble_refresh(lv_timer_t*) {
         lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
         lv_obj_set_style_pad_bottom(entry,8,0);
     }
+    if (!error && (ble_seen_n || n))
+        lv_label_set_text_fmt(ble_status,"%u devices seen (running)",(unsigned)ble_seen_n);
 }
 void on_bluetooth(lv_event_t*) { navigate("Bluetooth"); }
 
@@ -430,6 +458,8 @@ void navigate(const char* section) {
         wifi_timer = nullptr;
         wifi_list = nullptr;
         wifi_status = nullptr;
+        wifi_seen_n = 0;                      // fresh running list next visit
+        wifi_last_generation = UINT32_MAX;
         footholed_wifi_stop();
     }
     if (ble_timer) {
@@ -437,6 +467,8 @@ void navigate(const char* section) {
         ble_timer = nullptr;
         ble_list = nullptr;
         ble_status = nullptr;
+        ble_seen_n = 0;                       // fresh running list next visit
+        ble_last_generation = UINT32_MAX;
         footholed_ble_stop();
     }
     lv_obj_clean(screen);
