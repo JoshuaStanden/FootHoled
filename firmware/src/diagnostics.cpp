@@ -134,7 +134,11 @@ size_t footholed_diagnostics_run(fh_diag_result_t *out, size_t max,
             set_result(&out[n++], "I2C bus", FH_DIAG_SKIPPED, "bus not initialised");
         } else {
             int found = 0;
-            char list[48] = {0};
+            // kI2cKnown has 6 entries, each printed as " 0xNN" (<=5 chars),
+            // so the list is at most ~30 bytes; 32 bounds it with margin and
+            // lets the compiler prove the "%d ACK: %s" format below can't
+            // overflow the 48-byte detail buffer (-Werror=format-truncation).
+            char list[32] = {0};
             for (size_t i = 0; i < sizeof(kI2cKnown) / sizeof(kI2cKnown[0]); ++i) {
                 // 50 ms probe timeout; ESP_OK means the address ACKed.
                 if (i2c_master_probe(bus, kI2cKnown[i].addr, 50) == ESP_OK) {
@@ -146,7 +150,9 @@ size_t footholed_diagnostics_run(fh_diag_result_t *out, size_t max,
                 }
             }
             if (found > 0) {
-                snprintf(detail, sizeof(detail), "%d ACK: %s", found, list);
+                // %.30s caps the list so the worst case ("%d" up to 11 chars +
+                // " ACK: " + 30 + NUL = 48) fits the 48-byte detail buffer.
+                snprintf(detail, sizeof(detail), "%d ACK: %.30s", found, list);
                 set_result(&out[n++], "I2C bus", FH_DIAG_OK, detail);
             } else {
                 set_result(&out[n++], "I2C bus", FH_DIAG_FAIL, "no devices ACK");
