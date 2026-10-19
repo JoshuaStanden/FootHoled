@@ -543,6 +543,31 @@ void navigate(const char* section) {
         for(const char* name : {"Display","Device","Developer","About"}) button(content,name,on_stub,(void*)name);
     } else if (!strcmp(section,"Storage")) {
         label(content,"Storage");
+        // Detected card status + true capacity (read from the card CSD, so it
+        // is correct even when the filesystem is unreadable).
+        {
+            lv_obj_t* cs = lv_label_create(content);
+            lv_obj_set_width(cs, lv_pct(100));
+            lv_label_set_long_mode(cs, LV_LABEL_LONG_WRAP);
+            fh_sd_card_status_t st = footholed_recon_log_card_status();
+            double gb = footholed_recon_log_card_bytes() / 1e9;
+            char buf[96];
+            uint32_t col;
+            if (st == FH_SD_CARD_READY) {
+                snprintf(buf, sizeof(buf), "Card: %.1f GB — ready (FAT, logging)", gb);
+                col = 0x4ADE80; // green
+            } else if (st == FH_SD_CARD_UNREADABLE) {
+                snprintf(buf, sizeof(buf),
+                    "Card: %.1f GB — unreadable filesystem. Use Format below to "
+                    "reclaim it (FAT32, full capacity). No computer needed.", gb);
+                col = 0xFBBF24; // amber
+            } else {
+                snprintf(buf, sizeof(buf), "Card: none detected. Insert a microSD card.");
+                col = 0xFBBF24;
+            }
+            lv_label_set_text(cs, buf);
+            lv_obj_set_style_text_color(cs, lv_color_hex(col), 0);
+        }
         // Prominent, repeated warning that formatting is destructive & permanent.
         lv_obj_t* w1=lv_label_create(content);
         lv_label_set_text(w1,

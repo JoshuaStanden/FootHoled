@@ -57,6 +57,25 @@ bool footholed_recon_log_init();
 // True if the SD card mounted and the log file is writable.
 bool footholed_recon_log_available();
 
+// ---------------------------------------------------------------------------
+// Card presence / status, independent of whether a FAT filesystem mounted.
+// A field device must tell "no card" apart from "card present but its
+// filesystem is unreadable (e.g. exFAT/SDXC or raw)" so the UI can offer to
+// reclaim the latter with Format — without a PC.
+// ---------------------------------------------------------------------------
+typedef enum {
+    FH_SD_CARD_NONE = 0,       // no card detected (card init failed)
+    FH_SD_CARD_READY,          // card present AND FAT mounted (logging works)
+    FH_SD_CARD_UNREADABLE,     // card present but filesystem won't mount
+} fh_sd_card_status_t;
+
+// Current card status. Safe to call any time after footholed_recon_log_init().
+fh_sd_card_status_t footholed_recon_log_card_status(void);
+
+// Card capacity in bytes, 0 if no card. Read from the card CSD at init, so it
+// is valid even when the filesystem is UNREADABLE (for "32.0 GB card" display).
+uint64_t footholed_recon_log_card_bytes(void);
+
 // Append one CSV row per entry for a completed Wi-Fi scan (every sighting).
 // No-ops safely if the SD card is unavailable.
 void footholed_recon_log_wifi(const FootHoledAP *aps, size_t count);
@@ -93,8 +112,12 @@ typedef enum {
     FH_RECON_FMT_DONE_FAIL,  // format failed; card state undefined
 } fh_recon_fmt_phase_t;
 
-// Start the async format. Returns false if a format is already running or no
-// card is mounted (phase is set to DONE_NOCARD in that case). Non-blocking.
+// Start the async format. Formats the card to FAT32 at FULL capacity and
+// mounts it. Works whether the card is currently mounted (FH_SD_CARD_READY) OR
+// present-but-unreadable (FH_SD_CARD_UNREADABLE, e.g. exFAT/SDXC/raw) — so a
+// field user can reclaim any card WITHOUT a PC. Returns false only if a format
+// is already running or NO card is present (phase set to DONE_NOCARD then).
+// The caller MUST have obtained explicit user confirmation first. Non-blocking.
 bool footholed_recon_log_format_start(void);
 
 // Poll async-format status. Writes the current phase and a coarse 0..100

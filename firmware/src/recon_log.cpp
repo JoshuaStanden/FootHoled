@@ -24,6 +24,7 @@
 #include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <atomic>
 
 namespace {
@@ -51,6 +52,23 @@ constexpr int FH_PIN_SD_D0  = 9;
 sdmmc_card_t *s_card = nullptr;
 bool s_available = false;
 SemaphoreHandle_t s_guard = nullptr;
+
+// Card presence independent of filesystem mount (for Option-A field reclaim).
+std::atomic<int>      s_card_status{0};  // fh_sd_card_status_t
+std::atomic<uint64_t> s_card_bytes{0};   // capacity from CSD, valid if present
+
+// Build the SDMMC host + slot config used for both mount and standalone probe,
+// so the two paths can never drift. Defined once here.
+static void sd_make_host_slot(sdmmc_host_t *host, sdmmc_slot_config_t *slot) {
+    *host = SDMMC_HOST_DEFAULT();
+    host->max_freq_khz = SDMMC_FREQ_PROBING;   // conservative init clock
+    *slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot->width = 1;                            // 1-bit: CLK/CMD/D0 only
+    slot->clk = (gpio_num_t)FH_PIN_SD_CLK;
+    slot->cmd = (gpio_num_t)FH_PIN_SD_CMD;
+    slot->d0  = (gpio_num_t)FH_PIN_SD_D0;
+    slot->flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;  // board has no strong ext.
+}
 
 // ---------------------------------------------------------------------------
 // Async format state. The format erases the whole card and can take many
@@ -99,31 +117,41 @@ bool footholed_recon_log_init() {
     mount_cfg.max_files = 2;
     mount_cfg.allocation_unit_size = 16 * 1024;
 
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    // Start the handshake slow; this board's SD lines are marginal without
-    // strong external pull-ups, and a conservative probe clock improves
-    // first-contact reliability. FatFs bumps to the card's real speed after.
-    host.max_freq_khz = SDMMC_FREQ_PROBING;   // 400 kHz for init
-
-    sdmmc_slot_config_t slot_cfg = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_cfg.width = 1;                 // 1-bit mode: only CLK/CMD/D0 needed
-    slot_cfg.clk = (gpio_num_t)FH_PIN_SD_CLK;
-    slot_cfg.cmd = (gpio_num_t)FH_PIN_SD_CMD;
-    slot_cfg.d0  = (gpio_num_t)FH_PIN_SD_D0;
-    // CMD and D0 need pull-ups; this board has none strong enough externally,
-    // so enable the ESP32's internal pull-ups. Without this send_op_cond times
-    // out (0x107) and the card is never detected.
-    slot_cfg.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    sdmmc_host_t host;
+    sdmmc_slot_config_t slot_cfg;
+    sd_make_host_slot(&host, &slot_cfg);
 
     esp_err_t err = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_cfg,
                                             &mount_cfg, &s_card);
     if (err != ESP_OK) {
-        // No card / unformatted / wrong pins: degrade gracefully, do not crash.
-        ESP_LOGW(TAG, "SD mount failed (%s). Recon log disabled; card must be "
-                      "FAT32 and SDMMC pins verified.", esp_err_to_name(err));
+        // Mount failed. Distinguish "no card" from "card present but its
+        // filesystem is unreadable" (exFAT/SDXC/raw) — the latter can be
+        // reclaimed by Format without a PC. When the CARD initialised but only
+        // the FAT mount failed (e.g. ESP_FAIL on an exFAT card), the mount
+        // helper still populated s_card with the card info, so we read capacity
+        // from it. A null s_card means the card never initialised = no card.
+        if (s_card) {
+            uint64_t bytes = ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size;
+            s_card_bytes.store(bytes, std::memory_order_relaxed);
+            s_card_status.store(FH_SD_CARD_UNREADABLE, std::memory_order_release);
+            ESP_LOGW(TAG, "SD card present (%.1f GB) but filesystem unreadable "
+                          "(%s). Use Format to reclaim it.",
+                     bytes / 1e9, esp_err_to_name(err));
+        } else {
+            s_card_bytes.store(0, std::memory_order_relaxed);
+            s_card_status.store(FH_SD_CARD_NONE, std::memory_order_release);
+            ESP_LOGW(TAG, "No SD card detected (%s).", esp_err_to_name(err));
+        }
         s_available = false;
         return false;
     }
+
+    // Mounted OK — record capacity + ready status for the UI.
+    if (s_card) {
+        uint64_t bytes = ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size;
+        s_card_bytes.store(bytes, std::memory_order_relaxed);
+    }
+    s_card_status.store(FH_SD_CARD_READY, std::memory_order_release);
 
     // Create the file with a header row if it does not exist yet; otherwise
     // append (running log across power cycles).
@@ -255,7 +283,8 @@ static void format_task(void *)
     s_fmt_phase.store(FH_RECON_FMT_RUNNING, std::memory_order_release);
 
     // Guard against no card (shouldn't happen — start() checks — but be safe).
-    if (!s_available || !s_card) {
+    int status = s_card_status.load(std::memory_order_acquire);
+    if (status == FH_SD_CARD_NONE || !s_card) {
         s_fmt_phase.store(FH_RECON_FMT_DONE_NOCARD, std::memory_order_release);
         s_fmt_task = nullptr;
         vTaskDelete(nullptr);
@@ -268,24 +297,44 @@ static void format_task(void *)
     // Stop the Wi-Fi/BLE scanner log writers from touching the card DURING the
     // format. They check s_available before taking s_guard, so clearing it here
     // makes them no-op instead of contending for the lock / the FAT volume
-    // while esp_vfs_fat_sdcard_format() unmounts and rebuilds it. Without this
-    // the UI appeared to freeze under scanner contention.
+    // while the format unmounts and rebuilds it. Without this the UI froze.
     s_available = false;
 
     xSemaphoreTake(s_guard, portMAX_DELAY);
-    // Format at the card's FULL capacity: allocation_unit_size = 0 lets f_mkfs()
-    // pick the cluster size from the real card size. A fixed 16 KB unit (the
-    // mount default) produced a FAT that under-reported capacity (e.g. "16 GB"
-    // on a 32 GB card). use_one_fat=false keeps the redundant second FAT.
+
+    esp_err_t err;
+    // Format at FULL capacity: allocation_unit_size = 0 lets f_mkfs() size
+    // clusters from the real card capacity (a fixed 16 KB unit under-reported
+    // large cards, e.g. "16 GB" on a 32 GB card).
     esp_vfs_fat_mount_config_t fmt_cfg = {};
-    fmt_cfg.format_if_mount_failed = true;
+    fmt_cfg.format_if_mount_failed = true;   // reclaim an unreadable/exFAT card
     fmt_cfg.max_files              = 2;
-    fmt_cfg.allocation_unit_size   = 0;   // auto-size for full capacity
-    // The long stage: full erase + fresh FAT. Blocks this TASK, not the UI.
-    esp_err_t err = esp_vfs_fat_sdcard_format_cfg(MOUNT_POINT, s_card, &fmt_cfg);
+    fmt_cfg.allocation_unit_size   = 0;      // auto-size for full capacity
+
+    if (status == FH_SD_CARD_READY) {
+        // Already mounted via the VFS helper — format in place.
+        err = esp_vfs_fat_sdcard_format_cfg(MOUNT_POINT, s_card, &fmt_cfg);
+    } else {
+        // UNREADABLE (exFAT/SDXC/raw): s_card is the VFS mount helper's handle
+        // from the failed mount at init (card initialised, FS unmountable). The
+        // in-place format helper needs a cleanly (re)mounted volume, so release
+        // this handle via the VFS unmount, then mount WITH
+        // format_if_mount_failed=true — that re-inits the card and lays down a
+        // fresh FAT32 when the existing FS won't mount, reclaiming it to full
+        // capacity, no PC needed.
+        esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+        s_card = nullptr;
+        sdmmc_host_t host;
+        sdmmc_slot_config_t slot;
+        sd_make_host_slot(&host, &slot);
+        err = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot, &fmt_cfg, &s_card);
+    }
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "async format failed: %s", esp_err_to_name(err));
         s_available = false;
+        s_card_status.store(s_card ? FH_SD_CARD_UNREADABLE : FH_SD_CARD_NONE,
+                            std::memory_order_release);
         xSemaphoreGive(s_guard);
         s_fmt_pct.store(100, std::memory_order_relaxed);
         s_fmt_phase.store(FH_RECON_FMT_DONE_FAIL, std::memory_order_release);
@@ -311,6 +360,12 @@ static void format_task(void *)
     fclose(f);
 
     s_available = true;
+    // Refresh capacity + mark ready (card is now mounted FAT32 at full size).
+    if (s_card) {
+        uint64_t bytes = ((uint64_t)s_card->csd.capacity) * s_card->csd.sector_size;
+        s_card_bytes.store(bytes, std::memory_order_relaxed);
+    }
+    s_card_status.store(FH_SD_CARD_READY, std::memory_order_release);
     xSemaphoreGive(s_guard);
     ESP_LOGI(TAG, "async SD format complete; fresh empty log at %s", LOG_PATH);
     s_fmt_pct.store(100, std::memory_order_relaxed);
@@ -325,7 +380,9 @@ bool footholed_recon_log_format_start(void)
     if (s_fmt_phase.load(std::memory_order_acquire) == FH_RECON_FMT_RUNNING) {
         return false;
     }
-    if (!s_available || !s_card) {
+    // Need a card PRESENT (ready or unreadable). Only true "no card" refuses.
+    int status = s_card_status.load(std::memory_order_acquire);
+    if (status == FH_SD_CARD_NONE || !s_card) {
         s_fmt_pct.store(0, std::memory_order_relaxed);
         s_fmt_phase.store(FH_RECON_FMT_DONE_NOCARD, std::memory_order_release);
         return false;
@@ -348,4 +405,14 @@ fh_recon_fmt_phase_t footholed_recon_log_format_poll(int *out_percent)
 {
     if (out_percent) *out_percent = s_fmt_pct.load(std::memory_order_relaxed);
     return (fh_recon_fmt_phase_t)s_fmt_phase.load(std::memory_order_acquire);
+}
+
+fh_sd_card_status_t footholed_recon_log_card_status(void)
+{
+    return (fh_sd_card_status_t)s_card_status.load(std::memory_order_acquire);
+}
+
+uint64_t footholed_recon_log_card_bytes(void)
+{
+    return s_card_bytes.load(std::memory_order_relaxed);
 }
