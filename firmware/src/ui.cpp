@@ -551,15 +551,22 @@ void navigate(const char* section) {
             lv_label_set_long_mode(cs, LV_LABEL_LONG_WRAP);
             fh_sd_card_status_t st = footholed_recon_log_card_status();
             double gb = footholed_recon_log_card_bytes() / 1e9;
-            char buf[96];
+            if (gb < 0) gb = 0;
+            if (gb > 9999) gb = 9999;   // clamp so the %.1f below is bounded
+            // Pre-render capacity into a small FIXED buffer, then use %s in the
+            // messages. A bare %.1f makes GCC assume a huge worst-case width
+            // (-Werror=format-truncation); %s of a bounded buffer does not.
+            char gbs[12];
+            snprintf(gbs, sizeof(gbs), "%.1f", gb);  // e.g. "32.0"
+            char buf[128];
             uint32_t col;
             if (st == FH_SD_CARD_READY) {
-                snprintf(buf, sizeof(buf), "Card: %.1f GB — ready (FAT, logging)", gb);
+                snprintf(buf, sizeof(buf), "Card: %s GB — ready (FAT, logging)", gbs);
                 col = 0x4ADE80; // green
             } else if (st == FH_SD_CARD_UNREADABLE) {
                 snprintf(buf, sizeof(buf),
-                    "Card: %.1f GB — unreadable filesystem. Use Format below to "
-                    "reclaim it (FAT32, full capacity). No computer needed.", gb);
+                    "Card: %s GB — unreadable filesystem. Use Format below to "
+                    "reclaim it (FAT32, full capacity). No computer needed.", gbs);
                 col = 0xFBBF24; // amber
             } else {
                 snprintf(buf, sizeof(buf), "Card: none detected. Insert a microSD card.");
