@@ -286,11 +286,24 @@ static void fmt_poll_timer_cb(lv_timer_t* t) {
     int pct = 0;
     fh_recon_fmt_phase_t phase = footholed_recon_log_format_poll(&pct);
 
-    if (s_fmt_bar)   lv_bar_set_value(s_fmt_bar, pct, LV_ANIM_ON);
+    // The erase stage (backend reports a fixed ~10% for its whole duration) has
+    // no byte-level progress from the IDF format API. Showing a frozen 10% bar
+    // looks hung, so during that band drive an INDETERMINATE sweep ourselves so
+    // the user can see it is still working. Once the backend moves past the
+    // erase (>=85%, recreating log) we switch to the real value.
+    static int sweep = 10;   // sweeps 10..80 and wraps, while erasing
+    if (phase == FH_RECON_FMT_RUNNING && pct < 85) {
+        sweep += 6;
+        if (sweep > 80) sweep = 10;
+        if (s_fmt_bar) lv_bar_set_value(s_fmt_bar, sweep, LV_ANIM_ON);
+    } else if (s_fmt_bar) {
+        lv_bar_set_value(s_fmt_bar, pct, LV_ANIM_ON);   // real progress
+    }
+
     if (s_fmt_label) {
         lv_label_set_text(s_fmt_label,
             pct < 10  ? "Preparing..." :
-            pct < 85  ? "Erasing & formatting card..." :
+            pct < 85  ? "Erasing & formatting card (this can take a minute)..." :
             pct < 100 ? "Recreating log..." : "Finishing...");
     }
 
@@ -300,6 +313,7 @@ static void fmt_poll_timer_cb(lv_timer_t* t) {
         s_fmt_timer = nullptr;
         s_fmt_bar = nullptr;
         s_fmt_label = nullptr;
+        sweep = 10;   // reset for a future format
         fmt_result_msgbox(phase);
     }
 }
