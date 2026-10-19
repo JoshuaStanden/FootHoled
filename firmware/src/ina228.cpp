@@ -116,7 +116,11 @@ esp_err_t ina228_init(i2c_master_bus_handle_t bus, uint8_t addr,
     uint16_t mfr_id = 0, dev_id = 0;
     ret = reg_read16(h, INA228_REG_MANUFACTURER, &mfr_id);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "INA228 not found at 0x%02X", addr);
+        // The INA228 is an OPTIONAL power monitor. This board's power path is
+        // the AXP2101 PMIC (I2C 0x34); an INA228 at 0x40 may simply be absent.
+        // Absence is a normal probe outcome, not an error — log at DEBUG and
+        // let the caller treat it as NOT_PRESENT (diagnostics already does).
+        ESP_LOGD(TAG, "INA228 not present at 0x%02X (optional power monitor)", addr);
         i2c_master_bus_rm_device(h->i2c_dev);
         free(h);
         return ESP_ERR_NOT_FOUND;

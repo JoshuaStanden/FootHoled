@@ -81,21 +81,25 @@ esp_err_t qmi8658_init(i2c_master_bus_handle_t bus, uint8_t addr,
         return err;
     }
 
-    // Soft reset, then let the device settle before configuring.
-    reg_write(h, QMI8658_REG_RESET, QMI8658_RESET_CMD);
-    vTaskDelay(pdMS_TO_TICKS(15));
-
-    // Presence check — WHO_AM_I must read 0x05.
+    // Presence check FIRST — read WHO_AM_I before touching the device, so a
+    // probe at the wrong I2C address (the caller tries 0x6A then 0x6B) does not
+    // issue a soft-reset to a chip that may be at the other address. A miss
+    // here is a NORMAL probe outcome, not an error: log it at DEBUG and let the
+    // caller decide (it only warns once, if BOTH addresses fail).
     uint8_t who = 0;
     err = reg_read(h, QMI8658_REG_WHO_AM_I, &who);
     if (err != ESP_OK || who != QMI8658_WHO_AM_I_EXPECT) {
-        ESP_LOGE(TAG, "WHO_AM_I check failed (read 0x%02X, want 0x%02X, err %s)",
-                 who, QMI8658_WHO_AM_I_EXPECT,
-                 err == ESP_OK ? "none" : esp_err_to_name(err));
+        ESP_LOGD(TAG, "WHO_AM_I probe at 0x%02X: read 0x%02X (want 0x%02X)%s",
+                 addr, who, QMI8658_WHO_AM_I_EXPECT,
+                 err == ESP_OK ? "" : " [bus err]");
         i2c_master_bus_rm_device(h->dev);
         free(h);
         return ESP_ERR_NOT_FOUND;
     }
+
+    // Confirmed present at this address — now soft-reset and let it settle.
+    reg_write(h, QMI8658_REG_RESET, QMI8658_RESET_CMD);
+    vTaskDelay(pdMS_TO_TICKS(15));
 
     // CTRL1: enable address auto-increment for burst reads, 2-wire SPI off
     // (I2C mode). Datasheet default bit layout; 0x40 sets ADDR_AI.
