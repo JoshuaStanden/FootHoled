@@ -81,6 +81,18 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "Settings service degraded -- using defaults");
     }
 
+    // 2. LVGL + display hardware FIRST, before the radios.
+    //    The LVGL draw buffers need contiguous DMA-capable INTERNAL RAM. Wi-Fi
+    //    and NimBLE each grab large internal blocks when they start, which
+    //    fragments the region and makes the ~3x15 KB buffer allocation fail
+    //    (observed on hardware: "internal DMA draw-buffer alloc failed;
+    //    falling back to PSRAM", which then re-triggers the SPI NO_MEM storm).
+    //    Claiming the buffers here, while internal RAM is still whole, avoids it.
+    //    The scanner tasks below are idle until a screen starts them, so moving
+    //    them a few lines later is behaviourally identical.
+    lv_init();
+    const bool display_ready = footholed_board_init();
+
     // Mount the SD card and open the persistent recon log before the scanners
     // start producing sightings. Degrades gracefully (feature off) if no card.
     if (!footholed_recon_log_init()) {
@@ -94,12 +106,6 @@ extern "C" void app_main(void) {
     // the Bluetooth recon screen calls start(). Shares the 2.4 GHz radio with
     // Wi-Fi via the controller's coexistence support.
     if (!footholed_ble_init()) ESP_LOGE(TAG, "BLE scanner initialization failed");
-
-    // 2. LVGL must be initialized before the board adapter registers display/input.
-    lv_init();
-
-    // 3. Initialise board hardware (display + touch).
-    const bool display_ready = footholed_board_init();
 
     if (display_ready) {
         // 4. Correct backlight to the user's stored brightness (board init set 50 %).

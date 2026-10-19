@@ -95,8 +95,10 @@ static const char *TAG = "FootHoled/board";
 #define FH_LCD_CMD_BITS       8
 #define FH_LCD_PARAM_BITS     8
 
-// LVGL draw-buffer size: 1/10 frame, SPIRAM-backed (known-good baseline).
-#define FH_BUF_LINES          (FH_LCD_V_RES / 10)
+// LVGL draw-buffer size: 1/20 frame, internal-DMA-backed. Kept small so three
+// of them fit contiguous internal DMA RAM even under Wi-Fi + NimBLE pressure
+// (see the draw-buffer allocation site and DISPLAY_NOTES.md). 320*24*2 ~= 15 KB.
+#define FH_BUF_LINES          (FH_LCD_V_RES / 20)
 #define FH_BUF_SIZE           (FH_LCD_H_RES * FH_BUF_LINES)
 
 // ---------------------------------------------------------------------------
@@ -410,9 +412,12 @@ bool footholed_board_init(void)
     // S3 SPI-DMA cannot read PSRAM directly, so PSRAM buffers force a bounce
     // copy that starves under radio memory pressure. All three buffers below
     // can be handed to esp_lcd_panel_draw_bitmap() (buf1/buf2 directly, and
-    // s_rotate_buf on the rotated path), so ALL must be DMA-capable. At 1/10
-    // frame each (~30 KB) the ~90 KB is reserved here at boot, before the
-    // radios start, so it cannot fail later.
+    // s_rotate_buf on the rotated path), so ALL must be DMA-capable. At 1/20
+    // frame each (~15 KB) the ~45 KB is reserved here, and main.cpp calls this
+    // BEFORE Wi-Fi/NimBLE so internal RAM is still contiguous.
+    ESP_LOGI(TAG, "pre-alloc DMA-internal heap: free=%u largest-block=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     const uint32_t cap_dma = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
     s_lvgl_buf1  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), cap_dma);
     s_lvgl_buf2  = (lv_color_t *)heap_caps_malloc(FH_BUF_SIZE * sizeof(lv_color_t), cap_dma);
