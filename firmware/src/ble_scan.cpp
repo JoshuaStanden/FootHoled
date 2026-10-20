@@ -213,20 +213,29 @@ void scan_task(void *) {
         // Wait out the discovery window (callback fills `working`).
         vTaskDelay(pdMS_TO_TICKS(SCAN_WINDOW_MS + 150));
 
-        // Publish the window's result to the snapshot table.
+        // Publish the window's result to the snapshot table, and take a PRIVATE
+        // copy for the SD log in the SAME locked section. The log write below
+        // runs UNLOCKED (SD I/O must not block a UI snapshot read), so it must
+        // NOT read the shared `devices[]` — the next loop's memcpy into
+        // `devices`, or a concurrent gap_event, would be writing it at the same
+        // time. Reading a struct mid-memcpy yields torn fields (e.g. a
+        // svc_uuid_count/name out of sync with its data) and walking those off
+        // the end corrupts the heap — the TLSF "block must be free" panic.
+        // `log_copy` is touched only by this task, so it needs no lock itself.
+        static FootHoledBLEDevice log_copy[MAX_DEV];
         xSemaphoreTake(guard, portMAX_DELAY);
         size_t logged = 0;
         if (requested) {
             dev_count = working_count;
             memcpy(devices, working, working_count * sizeof(FootHoledBLEDevice));
+            memcpy(log_copy, working, working_count * sizeof(FootHoledBLEDevice));
             ++generation;
             logged = dev_count;
         }
         xSemaphoreGive(guard);
-        // Persist every device seen in this window to the SD-card log, after
-        // releasing the guard so SD I/O never blocks a UI snapshot read.
+        // Persist from the PRIVATE copy, not the shared snapshot table.
         if (logged > 0) {
-            footholed_recon_log_ble(devices, logged);
+            footholed_recon_log_ble(log_copy, logged);
         }
 
         vTaskDelay(pdMS_TO_TICKS(250)); // brief gap, matches Wi-Fi cadence feel

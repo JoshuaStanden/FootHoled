@@ -57,6 +57,8 @@ void scan_task(void *) {
         // let it exceed MAX_AP — the loop below indexes aps[MAX_AP].
         if (count > MAX_AP) count = MAX_AP;
         xSemaphoreTake(guard, portMAX_DELAY);
+        size_t log_n = 0;
+        static FootHoledAP wifi_log_copy[MAX_AP];
         if (requested) {
             error_state = err != ESP_OK;
             if (err == ESP_OK) {
@@ -70,14 +72,19 @@ void scan_task(void *) {
                     aps[i].authmode = (uint8_t)records[i].authmode;
                 }
                 ++generation;
+                // Private copy for the UNLOCKED SD log below, so it never reads
+                // the shared aps[] while the next scan cycle rewrites it (same
+                // torn-read/heap-corruption hazard as the BLE path).
+                memcpy(wifi_log_copy, aps, count * sizeof(FootHoledAP));
+                log_n = count;
             }
         }
         xSemaphoreGive(guard);
-        // Persist every sighting from this completed scan to the SD-card log.
+        // Persist from the PRIVATE copy, not the shared snapshot table.
         // No-ops safely if no card is mounted. Done after releasing the guard
         // so SD I/O never blocks a UI snapshot read.
-        if (err == ESP_OK && count > 0) {
-            footholed_recon_log_wifi(aps, count);
+        if (log_n > 0) {
+            footholed_recon_log_wifi(wifi_log_copy, log_n);
         }
         heap_caps_free(records);
         vTaskDelay(pdMS_TO_TICKS(2500));
