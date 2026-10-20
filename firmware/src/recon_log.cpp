@@ -114,6 +114,31 @@ void write_csv_field(FILE *f, const char *s) {
     fputc('"', f);
 }
 
+// String version of write_csv_field: append a quoted/escaped CSV field to the
+// `out` buffer at offset *pos, never writing past out_sz-1, always leaving a
+// NUL. Returns false if it had to truncate. Used by the append-helper logging
+// path (no stdio FILE buffer involved).
+bool append_csv_field(char *out, size_t out_sz, size_t *pos, const char *s) {
+    if (!s) s = "";
+    size_t p = *pos;
+    auto put = [&](char c) -> bool {
+        if (p + 1 >= out_sz) return false;   // keep room for the final NUL
+        out[p++] = c;
+        return true;
+    };
+    bool ok = put('"');
+    for (const char *q = s; ok && *q; ++q) {
+        char c = *q;
+        if (c == '"') { ok = put('"') && put('"'); }
+        else if (c == '\n' || c == '\r') { ok = put(' '); }
+        else { ok = put(c); }
+    }
+    if (ok) ok = put('"');
+    out[p] = 0;
+    *pos = p;
+    return ok;
+}
+
 uint32_t uptime_seconds() {
     return (uint32_t)(esp_log_timestamp() / 1000); // ms since boot -> seconds
 }
@@ -221,57 +246,72 @@ void footholed_recon_log_wifi(const FootHoledAP *aps, size_t count) {
 
 void footholed_recon_log_ble(const FootHoledBLEDevice *devs, size_t count) {
     if (!s_available || !devs || count == 0) return;
-    xSemaphoreTake(s_guard, portMAX_DELAY);
-    FILE *f = fopen(LOG_PATH, "a");
-    if (f) {
-        uint32_t t = uptime_seconds();
+    // Build each row into a stack buffer and write it through the locked append
+    // helper (footholed_recon_log_append_line) instead of fopen/fprintf/fclose.
+    // The stdio FILE path allocated a per-open buffer and, under near-full heap
+    // on the BLE screen, a buffered write clipped the tail canary of an
+    // allocation (CORRUPT HEAP "Bad tail", caught by heap poisoning at fclose).
+    // The append helper does one bounded fputs under the SD mutex — no
+    // per-row FILE buffer — which the boot/heap logs already use without issue.
+    uint32_t t = uptime_seconds();
+    for (size_t i = 0; i < count; ++i) {
         char mac[18];
-        for (size_t i = 0; i < count; ++i) {
-            format_mac(devs[i].addr, mac, sizeof(mac));
-            // uptime,type,identifier(name),mac,addr_type,channel(blank),rssi,adv_type,
-            // then capability columns: flags,appearance,tx_power,svc_uuids,mfg_id
-            fprintf(f, "%u,ble,", (unsigned)t);
-            write_csv_field(f, devs[i].name);
-            fprintf(f, ",%s,%u,,%d,%u,",
-                    mac, (unsigned)devs[i].addr_type, (int)devs[i].rssi,
-                    (unsigned)devs[i].adv_type);
-            // flags (hex), appearance (hex), tx_power (dBm or blank if absent)
-            fprintf(f, "0x%02X,0x%04X,", devs[i].adv_flags, devs[i].appearance);
-            if (devs[i].tx_power == FH_BLE_TX_POWER_NONE) fprintf(f, ",");
-            else fprintf(f, "%d,", (int)devs[i].tx_power);
-            // svc_uuids: ';'-joined 16-bit UUIDs in one quoted field (so the
-            // internal separator never breaks the CSV column layout).
-            {
-                char uuids[8 * 7 + 1];  // up to 8 * ";0xXXXX" (7) + NUL
-                size_t p = 0;
-                // Clamp the count to the array bound defensively: svc_uuids is
-                // [8], and a corrupt/under-initialised svc_uuid_count must never
-                // drive reads past it or writes past uuids[]. (This function is
-                // where a heap-corruption panic surfaced; harden every bound.)
-                uint8_t ncnt = devs[i].svc_uuid_count;
-                if (ncnt > 8) ncnt = 8;
-                for (uint8_t u = 0; u < ncnt; ++u) {
-                    int w = snprintf(uuids + p, sizeof(uuids) - p, "%s0x%04X",
-                                     u ? ";" : "", devs[i].svc_uuids[u]);
-                    if (w < 0) break;                       // encoding error
-                    if ((size_t)w >= sizeof(uuids) - p) {   // would truncate
-                        p = sizeof(uuids) - 1;              // clamp to last byte
-                        break;
-                    }
-                    p += (size_t)w;
-                }
-                uuids[p] = 0;                               // p <= sizeof-1 always
-                write_csv_field(f, uuids);
-            }
-            // mfg_id (hex) or blank if none
-            if (devs[i].mfg_id == FH_BLE_MFG_NONE) fprintf(f, ",\n");
-            else fprintf(f, ",0x%04X\n", devs[i].mfg_id);
+        format_mac(devs[i].addr, mac, sizeof(mac));
+
+        char row[256];
+        size_t p = 0;
+        int w = snprintf(row + p, sizeof(row) - p, "%u,ble,", (unsigned)t);
+        if (w < 0 || (size_t)w >= sizeof(row) - p) continue;   // skip a bad row
+        p += (size_t)w;
+
+        // name (quoted/escaped)
+        if (!append_csv_field(row, sizeof(row), &p, devs[i].name)) { /* truncated, still valid */ }
+
+        w = snprintf(row + p, sizeof(row) - p, ",%s,%u,,%d,%u,0x%02X,0x%04X,",
+                     mac, (unsigned)devs[i].addr_type, (int)devs[i].rssi,
+                     (unsigned)devs[i].adv_type, devs[i].adv_flags,
+                     devs[i].appearance);
+        if (w < 0 || (size_t)w >= sizeof(row) - p) continue;
+        p += (size_t)w;
+
+        // tx_power (dBm) or blank, then trailing comma
+        if (devs[i].tx_power == FH_BLE_TX_POWER_NONE) {
+            if (p + 1 < sizeof(row)) row[p++] = ',';
+        } else {
+            w = snprintf(row + p, sizeof(row) - p, "%d,", (int)devs[i].tx_power);
+            if (w < 0 || (size_t)w >= sizeof(row) - p) continue;
+            p += (size_t)w;
         }
-        fclose(f);
-    } else {
-        ESP_LOGW(TAG, "ble log append failed");
+        row[p] = 0;
+
+        // svc_uuids: ';'-joined 16-bit UUIDs in one quoted field.
+        {
+            char uuids[8 * 7 + 1];       // up to 8 * ";0xXXXX" (7) + NUL
+            size_t up = 0;
+            uint8_t ncnt = devs[i].svc_uuid_count;
+            if (ncnt > 8) ncnt = 8;      // clamp to the array bound defensively
+            for (uint8_t u = 0; u < ncnt; ++u) {
+                int uw = snprintf(uuids + up, sizeof(uuids) - up, "%s0x%04X",
+                                  u ? ";" : "", devs[i].svc_uuids[u]);
+                if (uw < 0) break;
+                if ((size_t)uw >= sizeof(uuids) - up) break;   // stop, no overrun
+                up += (size_t)uw;
+            }
+            uuids[up] = 0;
+            append_csv_field(row, sizeof(row), &p, uuids);
+        }
+
+        // mfg_id (hex) or blank, then newline
+        if (devs[i].mfg_id == FH_BLE_MFG_NONE) {
+            w = snprintf(row + p, sizeof(row) - p, ",\n");
+        } else {
+            w = snprintf(row + p, sizeof(row) - p, ",0x%04X\n", devs[i].mfg_id);
+        }
+        if (w < 0 || (size_t)w >= sizeof(row) - p) { row[p] = 0; }
+        else { p += (size_t)w; }
+
+        footholed_recon_log_append_line(LOG_PATH, CSV_HEADER, row);
     }
-    xSemaphoreGive(s_guard);
 }
 
 bool footholed_recon_log_format(void) {
