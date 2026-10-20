@@ -53,6 +53,28 @@ void footholed_boot_log_record(int reset_reason,
                                uint32_t min_free_heap_ever,
                                uint32_t largest_block);
 
+/**
+ * @brief Append one heap-usage sample to /sdcard/heap_log.csv.
+ *
+ * Diagnostic trend logging for the spontaneous-reboot investigation. Unlike the
+ * boot-time figures (captured once, pristine), this is called REPEATEDLY while
+ * recon is running, so a slow leak shows up as a declining min_free trend you
+ * can read off the card after a crash.
+ *
+ * Crucially this logs the INTERNAL-RAM heap (MALLOC_CAP_INTERNAL) separately
+ * from the total. The total free heap (~7 MB) is dominated by PSRAM and hides
+ * the real pressure; the Wi-Fi/BLE radio stacks fight over the scarce internal
+ * RAM (~512 KB), which is what actually runs out before a panic.
+ *
+ * CSV schema (/sdcard/heap_log.csv):
+ *   uptime_s,context,free_total,free_internal,min_free_internal,largest_internal
+ *
+ * @param context short tag for WHERE this sample was taken, e.g. "wifi",
+ *                "ble", or "wifi->ble" (the transition that precedes the crash).
+ *                Must be a short literal/identifier with no comma or newline.
+ */
+void footholed_boot_log_heap_sample(const char *context);
+
 #ifdef __cplusplus
 }
 #endif

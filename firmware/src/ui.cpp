@@ -18,6 +18,7 @@
 #include "diagnostics.h"
 #include "sd_format.h"
 #include "recon_log.h"   // async SD-format start/poll API
+#include "boot_log.h"    // footholed_boot_log_heap_sample (reboot diagnostics)
 #include "esp_app_desc.h" // firmware version/build info for the About screen
 #include "lvgl.h"
 #include <stdio.h>
@@ -222,6 +223,11 @@ void wifi_refresh(lv_timer_t*) {
     if (!error && (wifi_ui.total || n))
         lv_label_set_text_fmt(wifi_status,"%u APs seen (showing last %u)",
                               (unsigned)wifi_ui.total,(unsigned)wifi_ui.count);
+    // Reboot diagnostics: sample internal-RAM heap every ~10 s while scanning
+    // (timer fires ~500 ms, so every 20th tick) so a leak during a big capture
+    // shows as a declining min_free_internal trend in /sdcard/heap_log.csv.
+    static uint32_t wifi_hs_tick = 0;
+    if (++wifi_hs_tick >= 20) { wifi_hs_tick = 0; footholed_boot_log_heap_sample("wifi"); }
 }
 void on_wifi(lv_event_t*) { navigate("WiFi"); }
 
@@ -266,6 +272,11 @@ void ble_refresh(lv_timer_t*) {
     if (!error && (ble_ui.total || n))
         lv_label_set_text_fmt(ble_status,"%u devices seen (showing last %u)",
                               (unsigned)ble_ui.total,(unsigned)ble_ui.count);
+    // Reboot diagnostics: sample internal-RAM heap every ~10 s while BLE scans.
+    // This is the screen the crash happens on, so this trend is the key one —
+    // if free_internal falls steadily here, the reboot is memory exhaustion.
+    static uint32_t ble_hs_tick = 0;
+    if (++ble_hs_tick >= 20) { ble_hs_tick = 0; footholed_boot_log_heap_sample("ble"); }
 }
 void on_bluetooth(lv_event_t*) { navigate("Bluetooth"); }
 
@@ -525,6 +536,17 @@ void navigate(const char* section) {
         ble_ui.reset();                       // fresh bounded list next visit
         ble_last_generation = UINT32_MAX;
         footholed_ble_stop();
+    }
+    // Reboot diagnostics: sample the heap at every screen transition, AFTER the
+    // old screen's radio has been stopped. The Wi-Fi->Bluetooth transition is
+    // exactly where the spontaneous reboot occurs, so this row (tagged
+    // "nav:Bluetooth") is the last durable reading before a crash — compare
+    // free_internal here against the boot baseline to see how much the big
+    // Wi-Fi capture consumed. Cheap; one SD append per navigation.
+    {
+        char ctx[24];
+        snprintf(ctx, sizeof(ctx), "nav:%s", current_section);
+        footholed_boot_log_heap_sample(ctx);
     }
     lv_obj_clean(screen);
     lv_obj_set_style_pad_all(screen, 12, 0);

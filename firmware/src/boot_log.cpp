@@ -11,6 +11,8 @@
 #include "boot_log.h"
 #include "recon_log.h"      // footholed_recon_log_append_line()
 #include "esp_log.h"
+#include "esp_heap_caps.h"  // heap_caps_* for the internal-RAM heap sample
+#include "esp_timer.h"      // esp_timer_get_time() for the uptime column
 #include "nvs.h"
 #include <stdio.h>
 
@@ -20,6 +22,10 @@ const char *TAG = "FootHoled/bootlog";
 constexpr const char *BOOT_LOG_PATH = "/sdcard/boot_log.csv";
 constexpr const char *BOOT_CSV_HEADER =
     "boot_count,reset_reason,reason_detail,free_heap,min_free_heap_ever,largest_block\n";
+
+constexpr const char *HEAP_LOG_PATH = "/sdcard/heap_log.csv";
+constexpr const char *HEAP_CSV_HEADER =
+    "uptime_s,context,free_total,free_internal,min_free_internal,largest_internal\n";
 
 // Human-readable name + gloss for the ESP-IDF esp_reset_reason_t values. Kept
 // as plain ints so the caller passes (int)esp_reset_reason() without this file
@@ -82,4 +88,39 @@ void footholed_boot_log_record(int reset_reason,
     } else {
         ESP_LOGW(TAG, "boot log not persisted (no SD card)");
     }
+}
+
+void footholed_boot_log_heap_sample(const char *context)
+{
+    if (!context) context = "";
+
+    const uint32_t uptime_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    // Total free heap (PSRAM-dominated, ~7 MB) — kept for comparison. Use the
+    // heap_caps form (MALLOC_CAP_DEFAULT) so the symbol comes from
+    // esp_heap_caps.h, which this file already includes.
+    const uint32_t free_total =
+        (uint32_t)heap_caps_get_free_size(MALLOC_CAP_DEFAULT);
+    // Internal RAM only — the scarce ~512 KB the radio stacks fight over. This
+    // is the figure that actually trends toward zero before a panic.
+    const uint32_t free_internal =
+        (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t min_free_internal =
+        (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t largest_internal =
+        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    ESP_LOGI(TAG, "heap[%s] free_total=%u free_int=%u min_int=%u largest_int=%u",
+             context, (unsigned)free_total, (unsigned)free_internal,
+             (unsigned)min_free_internal, (unsigned)largest_internal);
+
+    char line[160];
+    snprintf(line, sizeof(line), "%u,%s,%u,%u,%u,%u\n",
+             (unsigned)uptime_s, context,
+             (unsigned)free_total, (unsigned)free_internal,
+             (unsigned)min_free_internal, (unsigned)largest_internal);
+
+    // Best-effort; no-ops to serial-only when there is no card. Not every
+    // sample needs to reach the card, so a failed append is not logged here
+    // (the serial line above already carried the data).
+    (void)footholed_recon_log_append_line(HEAP_LOG_PATH, HEAP_CSV_HEADER, line);
 }
