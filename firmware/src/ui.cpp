@@ -78,36 +78,95 @@ static void splash_done(lv_timer_t* timer) {
 }
 
 lv_obj_t* content = nullptr;
-lv_obj_t* wifi_list = nullptr;
 lv_obj_t* wifi_status = nullptr;
 lv_timer_t* wifi_timer = nullptr;
 uint32_t wifi_last_generation = UINT32_MAX;
 
-lv_obj_t* ble_list = nullptr;
 lv_obj_t* ble_status = nullptr;
 lv_timer_t* ble_timer = nullptr;
 uint32_t ble_last_generation = UINT32_MAX;
 
-// Running append-only lists: track MACs/BSSIDs already shown so each scan cycle
-// only APPENDS genuinely new devices to the bottom (never rebuilds the list),
-// which keeps the user's scroll position instead of snapping back to the top.
-// Capacity 128 each; once full, new devices stop being added (list is huge by
-// then). Reset on entering the Wi-Fi/BLE screen (see navigate()).
-constexpr size_t SEEN_MAX = 128;
-uint8_t  wifi_seen[SEEN_MAX][6]; size_t wifi_seen_n = 0;
-uint8_t  ble_seen[SEEN_MAX][6];  size_t ble_seen_n  = 0;
+// --------------------------------------------------------------------------
+// Bounded, recycled recon display list  (fixes the load-dependent reboot).
+//
+// The previous design was APPEND-ONLY: every genuinely new device created a
+// permanent lv_label object that was only freed on leaving the screen. In a
+// dense environment (hundreds of devices) the LVGL heap only ever shrank while
+// sitting in recon, and eventually an allocation failed and the firmware
+// crash-rebooted. Both the Wi-Fi and BLE screens shared this flaw.
+//
+// This replacement keeps a FIXED pool of at most MAX_ROWS label objects:
+//   - A new device whose MAC is not shown yet is APPENDED as a new row, until
+//     the pool holds MAX_ROWS rows.
+//   - Once full, a new device RECYCLES the oldest row (a ring buffer): the
+//     oldest label object is moved to the bottom and its text overwritten, and
+//     the oldest tracked MAC is replaced. No new allocation happens, so memory
+//     has a hard ceiling and the leak-to-reboot is gone.
+//   - An already-shown MAC is skipped (no duplicate rows, scroll preserved).
+//
+// The COMPLETE running record is unaffected: every sighting is still written
+// permanently to the SD-card CSV log (recon_log.cpp). This list is only the
+// live on-screen window.
+//
+// MAX_ROWS 48 matches the scanner snapshot capacity and is comfortable on this
+// RAM-tight board (48 labels vs. the old unbounded growth). `total` tracks the
+// cumulative count ever seen for the "N seen" status line.
+constexpr size_t MAX_ROWS = 48;
 
-// Return true if mac was already seen (so the caller skips it); otherwise
-// record it and return false (caller appends a new row). When the set is full
-// we return true for anything not already in it, so the list stops growing
-// rather than re-appending duplicates every cycle.
-static bool seen_contains_or_add(uint8_t seen[][6], size_t* count, const uint8_t mac[6]) {
-    for (size_t i = 0; i < *count; ++i) {
-        if (memcmp(seen[i], mac, 6) == 0) return true;   // already shown
+struct ReconListState {
+    lv_obj_t* list      = nullptr;        // the scrollable container
+    lv_obj_t* rows[MAX_ROWS] = { nullptr };// pooled label objects (ring buffer)
+    uint8_t   macs[MAX_ROWS][6] = {};      // MAC shown in rows[i]
+    size_t    count     = 0;               // rows currently in use (<= MAX_ROWS)
+    size_t    head      = 0;               // ring index of the oldest row
+    uint32_t  total     = 0;               // cumulative unique devices ever seen
+
+    void reset() {
+        list = nullptr;
+        for (size_t i = 0; i < MAX_ROWS; ++i) rows[i] = nullptr;
+        count = 0; head = 0; total = 0;
     }
-    if (*count >= SEEN_MAX) return true;                 // full: skip new ones
-    memcpy(seen[*count], mac, 6); (*count)++;
-    return false;                                        // newly added -> draw
+};
+
+ReconListState wifi_ui;
+ReconListState ble_ui;
+
+// True if `mac` is already shown in one of the live rows.
+static bool recon_list_contains(const ReconListState* s, const uint8_t mac[6]) {
+    for (size_t i = 0; i < s->count; ++i) {
+        if (memcmp(s->macs[i], mac, 6) == 0) return true;
+    }
+    return false;
+}
+
+// Show one device line. If `mac` is already on screen, do nothing. Otherwise
+// either append a new pooled row (while under MAX_ROWS) or recycle the oldest
+// one (ring buffer) — never allocating beyond MAX_ROWS labels. `total` counts
+// unique devices ever seen, for the status line.
+static void recon_list_show(ReconListState* s, const uint8_t mac[6], const char* line) {
+    if (!s->list) return;
+    if (recon_list_contains(s, mac)) return;   // already visible — skip
+
+    s->total++;
+
+    if (s->count < MAX_ROWS) {
+        // Pool not full yet: create one more row and append it.
+        lv_obj_t* entry = lv_label_create(s->list);
+        lv_obj_set_width(entry, lv_pct(100));
+        lv_label_set_long_mode(entry, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_pad_bottom(entry, 8, 0);
+        lv_label_set_text(entry, line);
+        s->rows[s->count] = entry;
+        memcpy(s->macs[s->count], mac, 6);
+        s->count++;
+    } else {
+        // Pool full: recycle the oldest row instead of allocating a new label.
+        lv_obj_t* entry = s->rows[s->head];
+        lv_label_set_text(entry, line);
+        lv_obj_move_foreground(entry);         // visually move it to the bottom
+        memcpy(s->macs[s->head], mac, 6);
+        s->head = (s->head + 1) % MAX_ROWS;    // advance the ring
+    }
 }
 
 void mask_identifier(char *s) {
@@ -131,20 +190,22 @@ const char* auth_name(uint8_t a) {
     }
 }
 void wifi_refresh(lv_timer_t*) {
-    if (!wifi_list || !wifi_status) return;
-    FootHoledAP aps[48];
+    if (!wifi_ui.list || !wifi_status) return;
+    // Snapshot buffer kept static (not on the LVGL timer's stack): 48 *
+    // sizeof(FootHoledAP) is ~2 KB and this callback runs on the shared LVGL
+    // stack. Safe because LVGL timers are single-threaded (UI thread only).
+    static FootHoledAP aps[48];
     uint32_t gen=0;
     bool running=false, error=false;
     size_t n=footholed_wifi_snapshot(aps,48,&gen,&running,&error);
     if (gen == wifi_last_generation && !error) return;
     wifi_last_generation=gen;
     if (error) lv_label_set_text(wifi_status,"Wi-Fi scan failed; retrying...");
-    else if (!wifi_seen_n && !n) lv_label_set_text(wifi_status,"Scanning for access points...");
-    // else: status updated to the cumulative total after the append loop below.
-    // Append-only: do NOT clean the list (that would reset scroll to top). Only
-    // add BSSIDs not seen before, so the list is a cumulative running record.
+    else if (!wifi_ui.total && !n) lv_label_set_text(wifi_status,"Scanning for access points...");
+    // else: status updated to the cumulative total after the loop below.
+    // Bounded recycled list: show new BSSIDs, recycling the oldest row once the
+    // on-screen pool is full (see recon_list_show). The full record is on SD.
     for (size_t i=0;i<n;++i) {
-        if (seen_contains_or_add(wifi_seen,&wifi_seen_n,aps[i].bssid)) continue;
         char ssid[33];
         strncpy(ssid, aps[i].ssid, sizeof(ssid)); ssid[32]=0;
         if (!ssid[0]) strcpy(ssid,"<hidden>");
@@ -156,14 +217,11 @@ void wifi_refresh(lv_timer_t*) {
         char line[180];
         snprintf(line,sizeof(line),"%s\n%s  |  %d dBm  |  CH %u  |  %s",
                  ssid,mac,(int)aps[i].rssi,(unsigned)aps[i].channel,auth_name(aps[i].authmode));
-        lv_obj_t* entry=lv_label_create(wifi_list);
-        lv_label_set_text(entry,line);
-        lv_obj_set_width(entry,lv_pct(100));
-        lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_pad_bottom(entry,8,0);
+        recon_list_show(&wifi_ui, aps[i].bssid, line);
     }
-    if (!error && (wifi_seen_n || n))
-        lv_label_set_text_fmt(wifi_status,"%u APs seen (running)",(unsigned)wifi_seen_n);
+    if (!error && (wifi_ui.total || n))
+        lv_label_set_text_fmt(wifi_status,"%u APs seen (showing last %u)",
+                              (unsigned)wifi_ui.total,(unsigned)wifi_ui.count);
 }
 void on_wifi(lv_event_t*) { navigate("WiFi"); }
 
@@ -178,18 +236,20 @@ const char* ble_addr_kind(uint8_t t) {
     }
 }
 void ble_refresh(lv_timer_t*) {
-    if (!ble_list || !ble_status) return;
-    FootHoledBLEDevice devs[48];
+    if (!ble_ui.list || !ble_status) return;
+    // Static snapshot buffer (not on the LVGL stack): 48 * sizeof(
+    // FootHoledBLEDevice) is ~3 KB. Safe: LVGL timers run on the UI thread only.
+    static FootHoledBLEDevice devs[48];
     uint32_t gen=0;
     bool running=false, error=false;
     size_t n=footholed_ble_snapshot(devs,48,&gen,&running,&error);
     if (gen == ble_last_generation && !error) return;
     ble_last_generation=gen;
     if (error) lv_label_set_text(ble_status,"BLE scan failed; retrying...");
-    else if (!ble_seen_n && !n) lv_label_set_text(ble_status,"Scanning for BLE devices...");
-    // Append-only running list: only add addresses not seen before, never clean.
+    else if (!ble_ui.total && !n) lv_label_set_text(ble_status,"Scanning for BLE devices...");
+    // Bounded recycled list: show new addresses, recycling the oldest row once
+    // the on-screen pool is full. The complete record is on the SD log.
     for (size_t i=0;i<n;++i) {
-        if (seen_contains_or_add(ble_seen,&ble_seen_n,devs[i].addr)) continue;
         char name[33];
         strncpy(name, devs[i].name, sizeof(name)); name[32]=0;
         if (!name[0]) strcpy(name,"<no name>");
@@ -201,14 +261,11 @@ void ble_refresh(lv_timer_t*) {
         char line[180];
         snprintf(line,sizeof(line),"%s\n%s  |  %d dBm  |  %s",
                  name,mac,(int)devs[i].rssi,ble_addr_kind(devs[i].addr_type));
-        lv_obj_t* entry=lv_label_create(ble_list);
-        lv_label_set_text(entry,line);
-        lv_obj_set_width(entry,lv_pct(100));
-        lv_label_set_long_mode(entry,LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_pad_bottom(entry,8,0);
+        recon_list_show(&ble_ui, devs[i].addr, line);
     }
-    if (!error && (ble_seen_n || n))
-        lv_label_set_text_fmt(ble_status,"%u devices seen (running)",(unsigned)ble_seen_n);
+    if (!error && (ble_ui.total || n))
+        lv_label_set_text_fmt(ble_status,"%u devices seen (showing last %u)",
+                              (unsigned)ble_ui.total,(unsigned)ble_ui.count);
 }
 void on_bluetooth(lv_event_t*) { navigate("Bluetooth"); }
 
@@ -456,18 +513,16 @@ void navigate(const char* section) {
     if (wifi_timer) {
         lv_timer_del(wifi_timer);
         wifi_timer = nullptr;
-        wifi_list = nullptr;
         wifi_status = nullptr;
-        wifi_seen_n = 0;                      // fresh running list next visit
+        wifi_ui.reset();                      // fresh bounded list next visit
         wifi_last_generation = UINT32_MAX;
         footholed_wifi_stop();
     }
     if (ble_timer) {
         lv_timer_del(ble_timer);
         ble_timer = nullptr;
-        ble_list = nullptr;
         ble_status = nullptr;
-        ble_seen_n = 0;                       // fresh running list next visit
+        ble_ui.reset();                       // fresh bounded list next visit
         ble_last_generation = UINT32_MAX;
         footholed_ble_stop();
     }
@@ -504,12 +559,13 @@ void navigate(const char* section) {
         label(content,"Nearby Wi-Fi access points");
         wifi_status=lv_label_create(content);
         lv_label_set_text(wifi_status,"Scanning for access points...");
-        wifi_list=lv_obj_create(content);
-        lv_obj_set_width(wifi_list,lv_pct(100));
-        lv_obj_set_flex_grow(wifi_list,1);
-        lv_obj_set_flex_flow(wifi_list,LV_FLEX_FLOW_COLUMN);
-        lv_obj_add_style(wifi_list,&panel_style,LV_PART_MAIN);
-        lv_obj_set_scroll_dir(wifi_list,LV_DIR_VER);
+        wifi_ui.reset();
+        wifi_ui.list=lv_obj_create(content);
+        lv_obj_set_width(wifi_ui.list,lv_pct(100));
+        lv_obj_set_flex_grow(wifi_ui.list,1);
+        lv_obj_set_flex_flow(wifi_ui.list,LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_style(wifi_ui.list,&panel_style,LV_PART_MAIN);
+        lv_obj_set_scroll_dir(wifi_ui.list,LV_DIR_VER);
         wifi_last_generation=UINT32_MAX;
         footholed_wifi_start();
         wifi_timer=lv_timer_create(wifi_refresh,500,nullptr);
@@ -518,12 +574,13 @@ void navigate(const char* section) {
         label(content,"Nearby Bluetooth LE devices");
         ble_status=lv_label_create(content);
         lv_label_set_text(ble_status,"Scanning for BLE devices...");
-        ble_list=lv_obj_create(content);
-        lv_obj_set_width(ble_list,lv_pct(100));
-        lv_obj_set_flex_grow(ble_list,1);
-        lv_obj_set_flex_flow(ble_list,LV_FLEX_FLOW_COLUMN);
-        lv_obj_add_style(ble_list,&panel_style,LV_PART_MAIN);
-        lv_obj_set_scroll_dir(ble_list,LV_DIR_VER);
+        ble_ui.reset();
+        ble_ui.list=lv_obj_create(content);
+        lv_obj_set_width(ble_ui.list,lv_pct(100));
+        lv_obj_set_flex_grow(ble_ui.list,1);
+        lv_obj_set_flex_flow(ble_ui.list,LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_style(ble_ui.list,&panel_style,LV_PART_MAIN);
+        lv_obj_set_scroll_dir(ble_ui.list,LV_DIR_VER);
         ble_last_generation=UINT32_MAX;
         footholed_ble_start();
         ble_timer=lv_timer_create(ble_refresh,500,nullptr);

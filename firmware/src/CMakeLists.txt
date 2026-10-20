@@ -12,6 +12,7 @@ idf_component_register(
         "axp2101.cpp"
         "qmi8658.cpp"
         "recon_log.cpp"
+        "boot_log.cpp"
         "sd_format.cpp"
         "diagnostics.cpp"
         # splash_logo.cpp defines the static RGB565 logo image

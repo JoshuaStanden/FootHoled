@@ -111,6 +111,16 @@ static const char *TAG = "FootHoled/board";
 #define FH_BL_FREQ_HZ         5000
 #define FH_BL_DUTY_MAX        1023
 
+// Panel protection: cap the backlight below full drive to prevent screen
+// burn-in observed at maximum brightness. The user-facing 0-100 % scale is
+// linearly remapped onto 0..FH_BL_DUTY_CEIL, so the slider's "100 %" lands on
+// this ceiling and the panel is never driven to full duty. This is enforced in
+// footholed_board_set_backlight() — the single source of the LEDC duty math —
+// so every caller (boot restore, Display slider, stored NVS value) is bounded.
+// 85 % duty = a 15 % reduction from full brightness.
+#define FH_BL_CEIL_PERCENT    85
+#define FH_BL_DUTY_CEIL       ((FH_BL_DUTY_MAX * FH_BL_CEIL_PERCENT) / 100)   // 869 of 1023
+
 // FT6336 touch controller — standard FT6x36 I2C register layout.
 #define FH_TOUCH_I2C_ADDR     0x38   // FT6336 fixed 7-bit address (vendor confirms)
 #define FT6336_REG_TD_STATUS  0x02   // number of touch points (low nibble)
@@ -269,11 +279,15 @@ static void backlight_init(void)
 }
 
 // Public: set backlight brightness 0-100 %. Used by main.cpp's boot restore
-// and the Display settings slider (live). Clamps and drives the LEDC duty.
+// and the Display settings slider (live). Remaps the 0-100 % request onto
+// 0..FH_BL_DUTY_CEIL so the panel is never driven above the burn-in-safe
+// ceiling, then drives the LEDC duty. Single source of the duty math.
 void footholed_board_set_backlight(uint8_t percent)
 {
     if (percent > 100) percent = 100;
-    uint32_t duty = ((uint32_t)percent * FH_BL_DUTY_MAX) / 100u;
+    // Scale the request across the capped range, not the full range, so 100 %
+    // maps to FH_BL_DUTY_CEIL (85 %) rather than FH_BL_DUTY_MAX (100 %).
+    uint32_t duty = ((uint32_t)percent * FH_BL_DUTY_CEIL) / 100u;
     ledc_set_duty(FH_BL_LEDC_MODE, FH_BL_LEDC_CHANNEL, duty);
     ledc_update_duty(FH_BL_LEDC_MODE, FH_BL_LEDC_CHANNEL);
 }

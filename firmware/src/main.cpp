@@ -24,7 +24,10 @@
 #include "wifi_scan.h"
 #include "ble_scan.h"
 #include "recon_log.h"
+#include "boot_log.h"
 #include "esp_log.h"
+#include "esp_system.h"       // esp_reset_reason(), esp_get_*_free_heap_size()
+#include "esp_heap_caps.h"    // heap_caps_get_largest_free_block()
 #include "driver/ledc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -72,6 +75,17 @@ static void build_app_ui(void) {
 }
 
 extern "C" void app_main(void) {
+    // 0. Capture the reset reason and startup heap FIRST, before anything
+    //    allocates. The reset reason explains why the previous run ended (a
+    //    crash stamps it into an always-on register that survives the reset);
+    //    we persist it to /sdcard/boot_log.csv once the card is mounted below.
+    //    Heap is read here so the figures reflect a near-pristine startup.
+    const int      boot_reset_reason = (int)esp_reset_reason();
+    const uint32_t boot_free_heap    = (uint32_t)esp_get_free_heap_size();
+    const uint32_t boot_min_free     = (uint32_t)esp_get_minimum_free_heap_size();
+    const uint32_t boot_largest_blk  =
+        (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+
     // 1. Load settings from NVS (or apply compile-time defaults on first boot).
     //    Must happen before UI init so the UI reads correct initial values.
     const bool settings_ok = footholed_settings_init();
@@ -96,6 +110,13 @@ extern "C" void app_main(void) {
     if (!footholed_recon_log_init()) {
         ESP_LOGW(TAG, "Recon SD log unavailable -- sightings will not be persisted");
     }
+
+    // Persist the boot/reset-reason row now that the card (if any) is mounted.
+    // Uses the values captured at the very top of app_main(). No-ops to
+    // serial-only when there is no card. (boot_log.cpp formats the row and
+    // writes it through recon_log's locked SD append.)
+    footholed_boot_log_record(boot_reset_reason, boot_free_heap,
+                              boot_min_free, boot_largest_blk);
 
     // Wi-Fi scanning runs on a separate task; no scanning during boot.
     if (!footholed_wifi_init()) ESP_LOGE(TAG, "Wi-Fi scanner initialization failed");

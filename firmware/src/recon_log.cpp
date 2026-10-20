@@ -448,3 +448,36 @@ uint64_t footholed_recon_log_card_bytes(void)
 {
     return s_card_bytes.load(std::memory_order_relaxed);
 }
+
+// ---------------------------------------------------------------------------
+// Generic locked append helper.
+//
+// recon_log.cpp owns the SD card (the mount handle and the s_guard mutex), so
+// any OTHER module that needs to write a file on the card must go through here
+// rather than opening the card independently — two unsynchronised writers to
+// the same FAT volume can corrupt it. This appends `line` to `path`, creating
+// the file with `header` first if it does not exist yet, all under s_guard.
+// Used by boot_log.cpp for /sdcard/boot_log.csv. No-ops (returns false) when
+// the card is unavailable, so callers degrade gracefully.
+bool footholed_recon_log_append_line(const char *path, const char *header,
+                                     const char *line)
+{
+    if (!s_available || !s_guard || !path || !line) return false;
+    xSemaphoreTake(s_guard, portMAX_DELAY);
+    FILE *probe = fopen(path, "r");
+    bool exists = (probe != nullptr);
+    if (probe) fclose(probe);
+
+    bool ok = false;
+    FILE *f = fopen(path, "a");
+    if (f) {
+        if (!exists && header) fputs(header, f);
+        fputs(line, f);
+        fclose(f);
+        ok = true;
+    } else {
+        ESP_LOGW(TAG, "append to %s failed", path);
+    }
+    xSemaphoreGive(s_guard);
+    return ok;
+}

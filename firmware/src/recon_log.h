@@ -124,3 +124,15 @@ bool footholed_recon_log_format_start(void);
 // percent (phase-driven, not byte-accurate). Safe to call from the UI thread
 // every frame. Returns the phase for convenience.
 fh_recon_fmt_phase_t footholed_recon_log_format_poll(int *out_percent);
+
+// ---------------------------------------------------------------------------
+// Generic locked append helper (SD ownership stays here).
+//
+// recon_log.cpp owns the SD card (mount handle + mutex). Other modules that
+// need to write a file on the card (e.g. boot_log.cpp -> /sdcard/boot_log.csv)
+// MUST go through this instead of opening the card themselves — two
+// unsynchronised writers to one FAT volume can corrupt it. Appends `line` to
+// `path`, writing `header` first if the file does not exist yet, all under the
+// SD mutex. Returns false (no-op) when the card is unavailable.
+bool footholed_recon_log_append_line(const char *path, const char *header,
+                                     const char *line);
