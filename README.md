@@ -81,4 +81,4 @@ https://buymeacoffee.com/FootHoled
 
 ## Yet another update - this project is on hold as I try to tackle another project before DC35, FAFO - Freq Around, Find Out. Details coming soon, waiting on slow boat from China so development on that can resume near the end of October. The plan is to have 100 units for sale at DC35. 
 
-## Haha! We're back, all gas no brakes. - Development is reinstated. 
+## Haha! We're back, all gas no brakes. - Development is reinstated October 2026 - Joshua here (S3Nt|N3L), we leveraging AI to bust off some code so we don't go stagnant. I've been prompting, reviewing, compiling, re-prompting, reviewing and recompiling until we are at no warnings, no show stoppers and no unintended consequences. I have a full roadmap of how things are going to work on my fork (and possibly Patrick's main branch). I hope that we keep in sync because I'm going to be adding a bunch of cool stuff. Imagine a CYD on steroids as a cyberdeck with a useable touchscreen. 
