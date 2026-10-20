@@ -18,6 +18,7 @@ uint32_t generation = 0;
 bool requested = false;
 bool ready = false;
 bool started = false;        // radio currently started (esp_wifi_start done)
+bool wifi_inited = false;    // esp_wifi_init currently active (freed on deinit)
 bool error_state = false;
 SemaphoreHandle_t guard = nullptr;
 TaskHandle_t worker = nullptr;
@@ -100,19 +101,22 @@ bool footholed_wifi_init() {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+    // Create the default STA netif ONCE and keep it for the device's lifetime.
+    // The Wi-Fi DRIVER itself (esp_wifi_init) is cycled on/off per screen (see
+    // start/stop) to free its large internal/DMA RAM for the SD card + NimBLE,
+    // but the netif + event loop are deliberately NOT torn down — destroying
+    // and recreating them across cycles is the fragile path that causes
+    // reconnect/IP hangs (we only scan, so we never need to). Keeping them
+    // resident is cheap; the heavy buffers live in the driver we deinit.
     if (!esp_netif_create_default_wifi_sta()) return false;
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&cfg);
-    if (err != ESP_OK) { ESP_LOGE(TAG,"WiFi init: %s",esp_err_to_name(err)); return false; }
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    // NOTE: the radio is NOT started here. footholed_wifi_start() calls
-    // esp_wifi_start() on screen-entry and footholed_wifi_stop() calls
-    // esp_wifi_stop() on screen-leave, so the Wi-Fi station control block and
-    // its RX/TX radio buffers are only resident while the Wi-Fi screen is open.
-    // This frees that internal RAM for NimBLE while the user is on the BLE
-    // screen — the two radio stacks co-residing was exhausting internal RAM in
-    // dense environments and causing a spontaneous reboot during BLE scanning.
+    // NOTE: esp_wifi_init() is NOT called here. footholed_wifi_start() inits +
+    // starts the Wi-Fi driver on screen-entry; footholed_wifi_stop() stops +
+    // DEINITS it on screen-leave, returning the whole Wi-Fi internal footprint
+    // (static RX/TX buffers etc.) to the heap so the SD DMA allocation and BLE
+    // have the internal DMA RAM they need. This is the fix for the
+    // "allocate_dma_buf: not enough mem" SD failures under Wi-Fi+BLE load.
     started = false;
+    wifi_inited = false;
     ready = true;
     if (xTaskCreate(scan_task, "fh_wifi_scan", 6144, nullptr, 4, &worker) != pdPASS) {
         ready = false;
@@ -122,7 +126,18 @@ bool footholed_wifi_init() {
 }
 void footholed_wifi_start() {
     if (!ready) return;
-    // Bring the radio up (idempotent) before marking scanning requested.
+    // Bring the Wi-Fi driver fully up: init -> set mode -> start. Idempotent via
+    // the wifi_inited/started flags, so re-entering the screen just re-inits.
+    if (!wifi_inited) {
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        esp_err_t err = esp_wifi_init(&cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "WiFi init: %s", esp_err_to_name(err));
+            return;
+        }
+        esp_wifi_set_mode(WIFI_MODE_STA);
+        wifi_inited = true;
+    }
     if (!started) {
         esp_err_t err = esp_wifi_start();
         if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STOPPED) {
@@ -144,13 +159,20 @@ void footholed_wifi_stop() {
     bool was_started = started;
     started = false;              // task stops scanning before the radio drops
     xSemaphoreGive(guard);
-    // Power the radio down so its station control block and RX/TX buffers are
-    // freed for BLE. esp_wifi_stop() aborts any in-flight scan. The worker task
-    // stays alive but idles (requested=false) until footholed_wifi_start() is
-    // called again on the next screen-entry, which re-runs esp_wifi_start().
+    // Fully power the Wi-Fi driver DOWN: stop then deinit, so its station
+    // control block AND its static/dynamic RX/TX buffers (internal RAM) are
+    // freed for the SD DMA allocation and NimBLE while on the BLE screen.
+    // esp_wifi_stop() aborts any in-flight scan. The worker task stays alive
+    // but idles until footholed_wifi_start() re-inits on the next entry. The
+    // netif + event loop created in init() are intentionally left in place.
     if (was_started) {
         esp_err_t err = esp_wifi_stop();
         if (err != ESP_OK) ESP_LOGW(TAG, "WiFi stop: %s", esp_err_to_name(err));
+    }
+    if (wifi_inited) {
+        esp_err_t err = esp_wifi_deinit();
+        if (err != ESP_OK) ESP_LOGW(TAG, "WiFi deinit: %s", esp_err_to_name(err));
+        wifi_inited = false;
     }
 }
 size_t footholed_wifi_snapshot(FootHoledAP *out, size_t capacity, uint32_t *gen, bool *running, bool *error) {

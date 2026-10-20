@@ -96,13 +96,21 @@ CONFIG_LV_USE_DRAW_SW=y
 CONFIG_LV_DRAW_SW_COMPLEX=y
 
 # ---------------------------------------------------------------------------
-# TEMPORARY DIAGNOSTIC — comprehensive heap corruption detection.
-# A TLSF "block must be free" panic keeps firing during an SD write on the BLE
-# recon path, but the crash line wanders (recon_log.cpp 106/235/268) and the
-# heap is always healthy, proving the corruption happens EARLIER and elsewhere;
-# the SD-write malloc is just where it is finally noticed. COMPREHENSIVE
-# poisoning writes canary bytes around every allocation and verifies them on
-# every heap op, so the panic fires AT THE WRITE that overruns — the backtrace
-# will then name the real culprit task/function directly.
-# Costs performance + some RAM; REMOVE this block once the bug is found & fixed.
-CONFIG_HEAP_POISONING_COMPREHENSIVE=y
+# Wi-Fi buffer budget — free INTERNAL (DMA-capable) RAM for the SD card.
+# The SD driver allocates its transfer buffer from internal DMA RAM on every
+# read/write (sdmmc allocate_dma_buf). Under a dense Wi-Fi scan (thousands of
+# APs) the Wi-Fi driver's STATIC RX buffers — allocated in internal RAM at
+# esp_wifi_init and held until esp_wifi_deinit — consumed enough that the SD
+# DMA allocation failed ("allocate_dma_buf: not enough mem, err=0x101"). We
+# only SCAN (never associate / move TCP traffic), so large buffer pools are
+# unnecessary. NOTE: with SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y the TX buffers are
+# already static-in-PSRAM-preferred (the dynamic-TX choice is unavailable), so
+# the lever that matters is the STATIC RX count + the cache-TX queue:
+#   - STATIC_RX_BUFFER_NUM 4 (was default 16): ~1.6 KB each -> frees ~19 KB
+#     internal RAM. These are the buffers freed by the per-screen deinit too.
+#   - DYNAMIC_RX_BUFFER_NUM 16: plenty for scan-only (default 32).
+#   - CACHE_TX_BUFFER_NUM 8 (was 32): cache-TX queue is for uplayer TX we never
+#     generate; shrink it. (Valid only with SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y.)
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
