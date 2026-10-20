@@ -119,3 +119,15 @@ CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=8
 # which exceeds 2x4=8, so pin it to 8. BA window only affects throughput on an
 # ASSOCIATED connection; we only scan (never associate), so 8 costs us nothing.
 CONFIG_ESP_WIFI_RX_BA_WIN=8
+
+# ---------------------------------------------------------------------------
+# TEMPORARY DIAGNOSTIC (round 2) — comprehensive heap poisoning.
+# The Wi-Fi memory fix worked: the crash moved from tlsf_MALLOC (out of memory)
+# to tlsf_FREE following a CORRUPT block pointer (EXCVADDR 0xb83c45f4, not a
+# heap address) — i.e. a real out-of-bounds write smashed an allocator header.
+# footholed_recon_log_ble itself is now fully bounds-checked, so the corruptor
+# is ELSEWHERE and the SD free() is just where it is noticed. The FIRST
+# poisoning attempt died on OOM at ~46 s before it could catch the overrun;
+# now that memory is freed it should run long enough for the canary check to
+# fire AT the offending write and name the real culprit. REMOVE once found.
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y
