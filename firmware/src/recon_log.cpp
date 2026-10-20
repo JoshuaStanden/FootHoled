@@ -94,27 +94,10 @@ void format_mac(const uint8_t *mac, char *out, size_t out_sz) {
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
-// CSV-escape an identifier (SSID / BLE name). RFC-4180 style: wrap in quotes
-// and double any embedded quote, so commas/quotes in an SSID cannot break the
-// column layout. A control char (newline/CR) is replaced with a space.
-void write_csv_field(FILE *f, const char *s) {
-    if (!s) s = "";
-    fputc('"', f);
-    // Defensive upper bound: callers pass name[33] / uuids[57]; cap the walk so
-    // a mis-terminated buffer can never run off into arbitrary memory (which is
-    // the kind of over-read that can surface as a heap-corruption panic later).
-    // 256 is far above any legitimate field, so this never truncates real data.
-    size_t n = 0;
-    for (const char *p = s; *p && n < 256; ++p, ++n) {
-        char c = *p;
-        if (c == '"') { fputc('"', f); fputc('"', f); }
-        else if (c == '\n' || c == '\r') { fputc(' ', f); }
-        else { fputc(c, f); }
-    }
-    fputc('"', f);
-}
-
-// String version of write_csv_field: append a quoted/escaped CSV field to the
+// CSV-escape an identifier (SSID / BLE name) into a string buffer. RFC-4180
+// style: wrap in quotes and double any embedded quote, so commas/quotes in an
+// SSID cannot break the column layout. A control char (newline/CR) becomes a
+// space. Append a quoted/escaped CSV field to the
 // `out` buffer at offset *pos, never writing past out_sz-1, always leaving a
 // NUL. Returns false if it had to truncate. Used by the append-helper logging
 // path (no stdio FILE buffer involved).
@@ -222,26 +205,31 @@ bool footholed_recon_log_available() { return s_available; }
 
 void footholed_recon_log_wifi(const FootHoledAP *aps, size_t count) {
     if (!s_available || !aps || count == 0) return;
-    xSemaphoreTake(s_guard, portMAX_DELAY);
-    FILE *f = fopen(LOG_PATH, "a");
-    if (f) {
-        uint32_t t = uptime_seconds();
+    // Same stdio-free row build + locked append as the BLE logger (see there):
+    // no per-open FILE buffer, so the under-pressure tail-canary overrun that
+    // bit the BLE path cannot happen here either. SSID is the only variable
+    // field; the 5 trailing blank columns keep wifi/ble rows column-aligned.
+    uint32_t t = uptime_seconds();
+    for (size_t i = 0; i < count; ++i) {
         char mac[18];
-        for (size_t i = 0; i < count; ++i) {
-            format_mac(aps[i].bssid, mac, sizeof(mac));
-            // uptime,type,identifier(SSID),mac,addr_type(blank),channel,rssi,authmode,
-            // then 5 blank BLE-capability columns so wifi/ble rows stay aligned.
-            fprintf(f, "%u,wifi,", (unsigned)t);
-            write_csv_field(f, aps[i].ssid);
-            fprintf(f, ",%s,,%u,%d,%u,,,,,\n",
-                    mac, (unsigned)aps[i].channel, (int)aps[i].rssi,
-                    (unsigned)aps[i].authmode);
-        }
-        fclose(f); // flush per completed scan
-    } else {
-        ESP_LOGW(TAG, "wifi log append failed");
+        format_mac(aps[i].bssid, mac, sizeof(mac));
+
+        char row[160];
+        size_t p = 0;
+        int w = snprintf(row + p, sizeof(row) - p, "%u,wifi,", (unsigned)t);
+        if (w < 0 || (size_t)w >= sizeof(row) - p) continue;
+        p += (size_t)w;
+
+        append_csv_field(row, sizeof(row), &p, aps[i].ssid);   // SSID, quoted
+
+        w = snprintf(row + p, sizeof(row) - p, ",%s,,%u,%d,%u,,,,,\n",
+                     mac, (unsigned)aps[i].channel, (int)aps[i].rssi,
+                     (unsigned)aps[i].authmode);
+        if (w < 0 || (size_t)w >= sizeof(row) - p) { row[p] = 0; }
+        else { p += (size_t)w; }
+
+        footholed_recon_log_append_line(LOG_PATH, CSV_HEADER, row);
     }
-    xSemaphoreGive(s_guard);
 }
 
 void footholed_recon_log_ble(const FootHoledBLEDevice *devs, size_t count) {
