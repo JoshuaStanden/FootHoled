@@ -94,3 +94,15 @@ CONFIG_LV_USE_CLIB_SPRINTF=y
 # IMU-driven software rotation in board_adapter.cpp flush_cb(); pin it on.
 CONFIG_LV_USE_DRAW_SW=y
 CONFIG_LV_DRAW_SW_COMPLEX=y
+
+# ---------------------------------------------------------------------------
+# TEMPORARY DIAGNOSTIC — comprehensive heap corruption detection.
+# A TLSF "block must be free" panic keeps firing during an SD write on the BLE
+# recon path, but the crash line wanders (recon_log.cpp 106/235/268) and the
+# heap is always healthy, proving the corruption happens EARLIER and elsewhere;
+# the SD-write malloc is just where it is finally noticed. COMPREHENSIVE
+# poisoning writes canary bytes around every allocation and verifies them on
+# every heap op, so the panic fires AT THE WRITE that overruns — the backtrace
+# will then name the real culprit task/function directly.
+# Costs performance + some RAM; REMOVE this block once the bug is found & fixed.
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y
