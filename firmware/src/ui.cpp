@@ -544,7 +544,10 @@ void navigate(const char* section) {
     // free_internal here against the boot baseline to see how much the big
     // Wi-Fi capture consumed. Cheap; one SD append per navigation.
     {
-        char ctx[24];
+        // ctx sized for the compiler's worst case, not the runtime values:
+        // current_section is char[32], so "nav:" (4) + up to 31 + NUL = 36.
+        // ctx[40] lets GCC prove no truncation (-Werror=format-truncation).
+        char ctx[40];
         snprintf(ctx, sizeof(ctx), "nav:%s", current_section);
         footholed_boot_log_heap_sample(ctx);
     }
