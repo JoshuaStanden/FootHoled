@@ -17,6 +17,7 @@ size_t ap_count = 0;
 uint32_t generation = 0;
 bool requested = false;
 bool ready = false;
+bool started = false;        // radio currently started (esp_wifi_start done)
 bool error_state = false;
 SemaphoreHandle_t guard = nullptr;
 TaskHandle_t worker = nullptr;
@@ -26,7 +27,7 @@ void scan_task(void *) {
     while (true) {
         bool active;
         xSemaphoreTake(guard, portMAX_DELAY);
-        active = requested;
+        active = requested && started;   // only scan while the radio is up
         xSemaphoreGive(guard);
         if (!active) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
         wifi_scan_config_t config = {};
@@ -45,6 +46,16 @@ void scan_task(void *) {
         } else if (err == ESP_OK) {
             err = esp_wifi_scan_get_ap_records(&count, records);
         }
+        // Release the driver's INTERNAL scan-result list every cycle. In a
+        // beacon-spam environment (thousands of APs) the driver buffers the
+        // full result set internally; reading only MAX_AP of them can leave the
+        // rest allocated, and that internal RAM accumulates cycle over cycle
+        // until an allocation fails and the firmware panic-reboots. Clearing it
+        // unconditionally after each scan bounds the driver's own footprint.
+        esp_wifi_clear_ap_list();
+        // Defensive: the API clamps `count` to the buffer (MAX_AP), but never
+        // let it exceed MAX_AP — the loop below indexes aps[MAX_AP].
+        if (count > MAX_AP) count = MAX_AP;
         xSemaphoreTake(guard, portMAX_DELAY);
         if (requested) {
             error_state = err != ESP_OK;
@@ -87,8 +98,14 @@ bool footholed_wifi_init() {
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) { ESP_LOGE(TAG,"WiFi init: %s",esp_err_to_name(err)); return false; }
     esp_wifi_set_mode(WIFI_MODE_STA);
-    err = esp_wifi_start();
-    if (err != ESP_OK) { ESP_LOGE(TAG,"WiFi start: %s",esp_err_to_name(err)); return false; }
+    // NOTE: the radio is NOT started here. footholed_wifi_start() calls
+    // esp_wifi_start() on screen-entry and footholed_wifi_stop() calls
+    // esp_wifi_stop() on screen-leave, so the Wi-Fi station control block and
+    // its RX/TX radio buffers are only resident while the Wi-Fi screen is open.
+    // This frees that internal RAM for NimBLE while the user is on the BLE
+    // screen — the two radio stacks co-residing was exhausting internal RAM in
+    // dense environments and causing a spontaneous reboot during BLE scanning.
+    started = false;
     ready = true;
     if (xTaskCreate(scan_task, "fh_wifi_scan", 6144, nullptr, 4, &worker) != pdPASS) {
         ready = false;
@@ -98,6 +115,17 @@ bool footholed_wifi_init() {
 }
 void footholed_wifi_start() {
     if (!ready) return;
+    // Bring the radio up (idempotent) before marking scanning requested.
+    if (!started) {
+        esp_err_t err = esp_wifi_start();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STOPPED) {
+            ESP_LOGE(TAG, "WiFi start: %s", esp_err_to_name(err));
+        } else {
+            xSemaphoreTake(guard, portMAX_DELAY);
+            started = true;
+            xSemaphoreGive(guard);
+        }
+    }
     xSemaphoreTake(guard, portMAX_DELAY);
     ap_count=0; ++generation; error_state=false; requested=true;
     xSemaphoreGive(guard);
@@ -106,8 +134,17 @@ void footholed_wifi_stop() {
     if (!ready) return;
     xSemaphoreTake(guard, portMAX_DELAY);
     requested=false;
+    bool was_started = started;
+    started = false;              // task stops scanning before the radio drops
     xSemaphoreGive(guard);
-    // In-flight scan may finish; next cycle will not start until re-entered.
+    // Power the radio down so its station control block and RX/TX buffers are
+    // freed for BLE. esp_wifi_stop() aborts any in-flight scan. The worker task
+    // stays alive but idles (requested=false) until footholed_wifi_start() is
+    // called again on the next screen-entry, which re-runs esp_wifi_start().
+    if (was_started) {
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK) ESP_LOGW(TAG, "WiFi stop: %s", esp_err_to_name(err));
+    }
 }
 size_t footholed_wifi_snapshot(FootHoledAP *out, size_t capacity, uint32_t *gen, bool *running, bool *error) {
     if (!ready) { if(gen)*gen=0; if(running)*running=false; if(error)*error=true; return 0; }
