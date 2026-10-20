@@ -98,8 +98,14 @@ void format_mac(const uint8_t *mac, char *out, size_t out_sz) {
 // and double any embedded quote, so commas/quotes in an SSID cannot break the
 // column layout. A control char (newline/CR) is replaced with a space.
 void write_csv_field(FILE *f, const char *s) {
+    if (!s) s = "";
     fputc('"', f);
-    for (const char *p = s; *p; ++p) {
+    // Defensive upper bound: callers pass name[33] / uuids[57]; cap the walk so
+    // a mis-terminated buffer can never run off into arbitrary memory (which is
+    // the kind of over-read that can surface as a heap-corruption panic later).
+    // 256 is far above any legitimate field, so this never truncates real data.
+    size_t n = 0;
+    for (const char *p = s; *p && n < 256; ++p, ++n) {
         char c = *p;
         if (c == '"') { fputc('"', f); fputc('"', f); }
         else if (c == '\n' || c == '\r') { fputc(' ', f); }
@@ -236,13 +242,25 @@ void footholed_recon_log_ble(const FootHoledBLEDevice *devs, size_t count) {
             // svc_uuids: ';'-joined 16-bit UUIDs in one quoted field (so the
             // internal separator never breaks the CSV column layout).
             {
-                char uuids[8 * 7 + 1];  // up to 8 * "0xXXXX;" + NUL
+                char uuids[8 * 7 + 1];  // up to 8 * ";0xXXXX" (7) + NUL
                 size_t p = 0;
-                for (uint8_t u = 0; u < devs[i].svc_uuid_count && p + 7 < sizeof(uuids); ++u) {
-                    p += snprintf(uuids + p, sizeof(uuids) - p, "%s0x%04X",
-                                  u ? ";" : "", devs[i].svc_uuids[u]);
+                // Clamp the count to the array bound defensively: svc_uuids is
+                // [8], and a corrupt/under-initialised svc_uuid_count must never
+                // drive reads past it or writes past uuids[]. (This function is
+                // where a heap-corruption panic surfaced; harden every bound.)
+                uint8_t ncnt = devs[i].svc_uuid_count;
+                if (ncnt > 8) ncnt = 8;
+                for (uint8_t u = 0; u < ncnt; ++u) {
+                    int w = snprintf(uuids + p, sizeof(uuids) - p, "%s0x%04X",
+                                     u ? ";" : "", devs[i].svc_uuids[u]);
+                    if (w < 0) break;                       // encoding error
+                    if ((size_t)w >= sizeof(uuids) - p) {   // would truncate
+                        p = sizeof(uuids) - 1;              // clamp to last byte
+                        break;
+                    }
+                    p += (size_t)w;
                 }
-                uuids[p] = 0;
+                uuids[p] = 0;                               // p <= sizeof-1 always
                 write_csv_field(f, uuids);
             }
             // mfg_id (hex) or blank if none
